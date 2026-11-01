@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.py[cod]
+build/
+dist/
+*.spec
+.env
+.env.*
+settings.json
+journal.sqlite3*
+instance.lock
+smoke-test.json

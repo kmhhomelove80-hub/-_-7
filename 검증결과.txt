@@ -1,0 +1,35 @@
+test_account_mismatch (test_trader.AdapterTests.test_account_mismatch) ... ok
+test_cash_uses_100_percent_cash_and_d2 (test_trader.AdapterTests.test_cash_uses_100_percent_cash_and_d2) ... ok
+test_credit_balance_rejected (test_trader.AdapterTests.test_credit_balance_rejected) ... ok
+test_error_response_does_not_echo_secrets (test_trader.AdapterTests.test_error_response_does_not_echo_secrets) ... ok
+test_missing_schema_blocks (test_trader.AdapterTests.test_missing_schema_blocks) ... ok
+test_official_account_field (test_trader.AdapterTests.test_official_account_field) ... ok
+test_pagination_and_headers (test_trader.AdapterTests.test_pagination_and_headers) ... ok
+test_timeout_order_single_attempt (test_trader.AdapterTests.test_timeout_order_single_attempt) ... ok
+test_buy_timeout_not_retried (test_trader.EngineTests.test_buy_timeout_not_retried) ... ok
+test_cap_prevents_any_order (test_trader.EngineTests.test_cap_prevents_any_order) ... ok
+test_daily_limit_persists_across_restart (test_trader.EngineTests.test_daily_limit_persists_across_restart) ... ok
+test_equal_drop_a_first (test_trader.EngineTests.test_equal_drop_a_first) ... ok
+test_existing_pending_order_blocks (test_trader.EngineTests.test_existing_pending_order_blocks) ... ok
+test_external_trade_detected_before_buy (test_trader.EngineTests.test_external_trade_detected_before_buy) ... ok
+test_failure_reserves_daily_slot_even_after_reconcile (test_trader.EngineTests.test_failure_reserves_daily_slot_even_after_reconcile) ... ok
+test_full_cycle_with_zero_initial_cash (test_trader.EngineTests.test_full_cycle_with_zero_initial_cash) ... ok
+test_immediate_repeat_until_daily_limit (test_trader.EngineTests.test_immediate_repeat_until_daily_limit) ... ok
+test_larger_drop_first (test_trader.EngineTests.test_larger_drop_first) ... ok
+test_market_closed_blocks (test_trader.EngineTests.test_market_closed_blocks) ... ok
+test_minimum_quantity_prevents_sale (test_trader.EngineTests.test_minimum_quantity_prevents_sale) ... ok
+test_partial_sell_stop_never_buys (test_trader.EngineTests.test_partial_sell_stop_never_buys) ... ok
+test_stop_blocks_order (test_trader.EngineTests.test_stop_blocks_order) ... ok
+test_stop_during_account_check_blocks_send (test_trader.EngineTests.test_stop_during_account_check_blocks_send) ... ok
+test_unknown_sell_is_not_retried_after_restart (test_trader.EngineTests.test_unknown_sell_is_not_retried_after_restart) ... ok
+test_wrong_account_blocks (test_trader.EngineTests.test_wrong_account_blocks) ... ok
+test_buy_respects_all_three_budgets_and_cost_reserve (test_trader.MathTests.test_buy_respects_all_three_budgets_and_cost_reserve) ... ok
+test_config_bounds (test_trader.MathTests.test_config_bounds) ... ok
+test_execution_dedup_and_weighted_amount (test_trader.MathTests.test_execution_dedup_and_weighted_amount) ... ok
+test_nan_inf_not_accepted (test_trader.MathTests.test_nan_inf_not_accepted) ... ok
+test_sale_uses_holdings_fraction_and_available_cap (test_trader.MathTests.test_sale_uses_holdings_fraction_and_available_cap) ... ok
+
+----------------------------------------------------------------------
+Ran 30 tests in 0.020s
+
+OK
