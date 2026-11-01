@@ -1,5 +1,6 @@
 """Two-stock live trading engine. No network calls occur on import."""
 from dataclasses import dataclass, replace
+from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 from datetime import datetime, timedelta, timezone
 import json
@@ -160,10 +161,15 @@ class Journal:
               id INTEGER PRIMARY KEY, at TEXT NOT NULL, message TEXT NOT NULL);
             ''')
 
+    @contextmanager
     def connect(self):
         db = sqlite3.connect(self.path, timeout=5)
-        db.execute('PRAGMA synchronous=FULL')
-        return db
+        try:
+            db.execute('PRAGMA synchronous=FULL')
+            with db:
+                yield db
+        finally:
+            db.close()
 
     def active(self):
         with self.connect() as db:

@@ -30,6 +30,6 @@ test_nan_inf_not_accepted (test_trader.MathTests.test_nan_inf_not_accepted) ... 
 test_sale_uses_holdings_fraction_and_available_cap (test_trader.MathTests.test_sale_uses_holdings_fraction_and_available_cap) ... ok
 
 ----------------------------------------------------------------------
-Ran 30 tests in 0.020s
+Ran 30 tests in 0.023s
 
 OK
