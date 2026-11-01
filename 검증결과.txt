@@ -5,6 +5,16 @@ test_transient_read_error_retries_and_closes_session (test_monitor.MonitorTests.
 test_all_positions_and_negative_deposit_can_be_displayed (test_monitor.SnapshotTests.test_all_positions_and_negative_deposit_can_be_displayed) ... ok
 test_display_has_no_dependency_on_strategy_codes (test_monitor.SnapshotTests.test_display_has_no_dependency_on_strategy_codes) ... ok
 test_empty_account_zero_totals (test_monitor.SnapshotTests.test_empty_account_zero_totals) ... ok
+test_disabled_notification_does_not_send (test_notifications.MailTests.test_disabled_notification_does_not_send) ... ok
+test_failure_sanitized_and_next_notification_continues (test_notifications.MailTests.test_failure_sanitized_and_next_notification_continues) ... ok
+test_header_injection_and_cleartext_disabled (test_notifications.MailTests.test_header_injection_and_cleartext_disabled) ... ok
+test_ssl_mail_and_login (test_notifications.MailTests.test_ssl_mail_and_login) ... ok
+test_starttls_before_login (test_notifications.MailTests.test_starttls_before_login) ... ok
+test_api_rejection_is_not_retried (test_notifications.TelegramTests.test_api_rejection_is_not_retried) ... ok
+test_bad_token_and_chat_id_rejected (test_notifications.TelegramTests.test_bad_token_and_chat_id_rejected) ... ok
+test_chat_lookup_deduplicates_only_private_chats (test_notifications.TelegramTests.test_chat_lookup_deduplicates_only_private_chats) ... ok
+test_push_request_uses_correct_private_chat_and_sound (test_notifications.TelegramTests.test_push_request_uses_correct_private_chat_and_sound) ... ok
+test_token_not_leaked_in_network_error (test_notifications.TelegramTests.test_token_not_leaked_in_network_error) ... ok
 test_account_mismatch (test_trader.AdapterTests.test_account_mismatch) ... ok
 test_cash_uses_100_percent_cash_and_d2 (test_trader.AdapterTests.test_cash_uses_100_percent_cash_and_d2) ... ok
 test_credit_balance_rejected (test_trader.AdapterTests.test_credit_balance_rejected) ... ok
@@ -13,30 +23,29 @@ test_missing_schema_blocks (test_trader.AdapterTests.test_missing_schema_blocks)
 test_official_account_field (test_trader.AdapterTests.test_official_account_field) ... ok
 test_pagination_and_headers (test_trader.AdapterTests.test_pagination_and_headers) ... ok
 test_timeout_order_single_attempt (test_trader.AdapterTests.test_timeout_order_single_attempt) ... ok
-test_buy_timeout_not_retried (test_trader.EngineTests.test_buy_timeout_not_retried) ... ok
-test_cap_prevents_any_order (test_trader.EngineTests.test_cap_prevents_any_order) ... ok
-test_daily_limit_persists_across_restart (test_trader.EngineTests.test_daily_limit_persists_across_restart) ... ok
-test_equal_drop_a_first (test_trader.EngineTests.test_equal_drop_a_first) ... ok
-test_existing_pending_order_blocks (test_trader.EngineTests.test_existing_pending_order_blocks) ... ok
-test_external_trade_detected_before_buy (test_trader.EngineTests.test_external_trade_detected_before_buy) ... ok
-test_failure_reserves_daily_slot_even_after_reconcile (test_trader.EngineTests.test_failure_reserves_daily_slot_even_after_reconcile) ... ok
-test_full_cycle_with_zero_initial_cash (test_trader.EngineTests.test_full_cycle_with_zero_initial_cash) ... ok
-test_immediate_repeat_until_daily_limit (test_trader.EngineTests.test_immediate_repeat_until_daily_limit) ... ok
-test_larger_drop_first (test_trader.EngineTests.test_larger_drop_first) ... ok
-test_market_closed_blocks (test_trader.EngineTests.test_market_closed_blocks) ... ok
-test_minimum_quantity_prevents_sale (test_trader.EngineTests.test_minimum_quantity_prevents_sale) ... ok
-test_partial_sell_stop_never_buys (test_trader.EngineTests.test_partial_sell_stop_never_buys) ... ok
-test_stop_blocks_order (test_trader.EngineTests.test_stop_blocks_order) ... ok
-test_stop_during_account_check_blocks_send (test_trader.EngineTests.test_stop_during_account_check_blocks_send) ... ok
-test_unknown_sell_is_not_retried_after_restart (test_trader.EngineTests.test_unknown_sell_is_not_retried_after_restart) ... ok
-test_wrong_account_blocks (test_trader.EngineTests.test_wrong_account_blocks) ... ok
-test_buy_respects_all_three_budgets_and_cost_reserve (test_trader.MathTests.test_buy_respects_all_three_budgets_and_cost_reserve) ... ok
-test_config_bounds (test_trader.MathTests.test_config_bounds) ... ok
-test_execution_dedup_and_weighted_amount (test_trader.MathTests.test_execution_dedup_and_weighted_amount) ... ok
-test_nan_inf_not_accepted (test_trader.MathTests.test_nan_inf_not_accepted) ... ok
-test_sale_uses_holdings_fraction_and_available_cap (test_trader.MathTests.test_sale_uses_holdings_fraction_and_available_cap) ... ok
+test_buy_budgets (test_trader.MathTests.test_buy_budgets) ... ok
+test_fraction_rounding_and_available (test_trader.MathTests.test_fraction_rounding_and_available) ... ok
+test_limit_bounds (test_trader.MathTests.test_limit_bounds) ... ok
+test_nonfinite_values_blocked (test_trader.MathTests.test_nonfinite_values_blocked) ... ok
+test_signal_exact_thresholds (test_trader.MathTests.test_signal_exact_thresholds) ... ok
+test_weighted_fills_deduplicated (test_trader.MathTests.test_weighted_fills_deduplicated) ... ok
+test_10500_sell_then_9975_buy_then_10473_75_sell (test_trader.StrategyTests.test_10500_sell_then_9975_buy_then_10473_75_sell) ... ok
+test_a_price_is_not_a_signal (test_trader.StrategyTests.test_a_price_is_not_a_signal) ... ok
+test_after_buy_further_drop_does_not_buy_again (test_trader.StrategyTests.test_after_buy_further_drop_does_not_buy_again) ... ok
+test_b_sell_reference_saved_even_if_a_buy_fails (test_trader.StrategyTests.test_b_sell_reference_saved_even_if_a_buy_fails) ... ok
+test_cap_prevents_orders (test_trader.StrategyTests.test_cap_prevents_orders) ... ok
+test_daily_limit_shared_both_directions (test_trader.StrategyTests.test_daily_limit_shared_both_directions) ... ok
+test_initial_custom_price_and_direction (test_trader.StrategyTests.test_initial_custom_price_and_direction) ... ok
+test_missing_a_inventory_does_not_impose_minimum_balance (test_trader.StrategyTests.test_missing_a_inventory_does_not_impose_minimum_balance) ... ok
+test_notice_events_cover_signal_orders_fills_and_completion (test_trader.StrategyTests.test_notice_events_cover_signal_orders_fills_and_completion) ... ok
+test_partial_sell_never_buys_or_changes_reference (test_trader.StrategyTests.test_partial_sell_never_buys_or_changes_reference) ... ok
+test_reset_preserves_daily_count_and_blocks_active_cycle (test_trader.StrategyTests.test_reset_preserves_daily_count_and_blocks_active_cycle) ... ok
+test_state_persists_across_restart_and_average_changes (test_trader.StrategyTests.test_state_persists_across_restart_and_average_changes) ... ok
+test_stop_during_account_check_blocks_send (test_trader.StrategyTests.test_stop_during_account_check_blocks_send) ... ok
+test_unknown_sell_blocked_after_restart (test_trader.StrategyTests.test_unknown_sell_blocked_after_restart) ... ok
+test_user_stop_and_market_closed_do_not_order (test_trader.StrategyTests.test_user_stop_and_market_closed_do_not_order) ... ok
 
 ----------------------------------------------------------------------
-Ran 37 tests in 3.972s
+Ran 46 tests in 3.990s
 
 OK

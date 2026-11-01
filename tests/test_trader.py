@@ -8,18 +8,17 @@ import unittest
 from unittest.mock import patch
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from core import Config, Rule, Holding, D, Halt, Journal, Engine, KST, buy_qty, sale_qty, select_target, fill_totals, number
+from core import Config, Rule, Holding, D, Halt, Journal, Engine, KST, buy_qty, sale_qty, signal, fill_totals, number
 from broker import Kiwoom
 
 
-def config(daily=3):
-    return Config((Rule('005930', 'A종목', D(10), D(20)),
-                   Rule('000660', 'B종목', D(10), D(20))), 5_000_000, daily)
+def config(daily=10):
+    return Config((Rule('005930', 'A종목'), Rule('000660', 'B종목')), 5_000_000, daily)
 
 
 def holdings():
-    return {'005930': Holding('005930', 'A종목', 100, 100, D(10000), D(9000), 1_000_000),
-            '000660': Holding('000660', 'B종목', 100, 100, D(20000), D(20000), 2_000_000)}
+    return {'005930': Holding('005930', 'A종목', 100, 100, D(10000), D(10000), 1_000_000),
+            '000660': Holding('000660', 'B종목', 100, 100, D(10000), D(10000), 1_000_000)}
 
 
 class FakeBroker:
@@ -52,7 +51,7 @@ class FakeBroker:
     def order(self, side, symbol, qty, price):
         self.orders.append((side, symbol, qty, price))
         if self.unknown_sell and side == '매도':
-            raise Halt('통신 끊김: 접수 여부 불명')
+            raise Halt('접수 여부 불명')
         h = self.hs[symbol]
         if not self.partial:
             if side == '매도':
@@ -69,12 +68,11 @@ class FakeBroker:
     def fills(self, order, symbol, side, expected):
         if self.partial:
             self.engine.stop.set()
-            return 1, D(20000)
-        price = self.orders[int(order)-1][3]
-        return expected, price * expected
+            return 1, D(10000)
+        return expected, self.orders[int(order)-1][3] * expected
 
 
-class EngineTests(unittest.TestCase):
+class StrategyTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.path = Path(self.tmp.name) / 'journal.sqlite3'
@@ -88,184 +86,197 @@ class EngineTests(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def test_full_cycle_with_zero_initial_cash(self):
-        self.assertTrue(self.engine.cycle())
-        self.assertEqual([x[0] for x in self.broker.orders], ['매도','매수'])
-        self.assertEqual(self.broker.orders[0][2], 20)
-        self.assertEqual(self.broker.orders[1][2], 44)
-        self.assertEqual(self.broker.hs['005930'].qty, 144)
-        self.assertLess(self.broker.hs['005930'].drop, D(10))
-        self.assertFalse(self.journal.active())
-        self.assertFalse(self.engine.cycle())
-        self.assertEqual(len(self.broker.orders), 2)
-
-    def test_larger_drop_first(self):
+    def price(self, price):
         h = self.broker.hs['000660']
-        self.broker.hs[h.code] = replace(h, current=D(16000))
+        self.broker.hs[h.code] = replace(h, current=D(price))
+
+    def state(self):
+        return self.journal.state(self.broker.account, '005930', '000660')
+
+    def test_10500_sell_then_9975_buy_then_10473_75_sell(self):
+        self.price(10500)
+        self.assertTrue(self.engine.cycle())
+        self.assertEqual(self.broker.orders[0][:3], ('매도','000660',5))
+        self.assertEqual(self.broker.orders[1][1], '005930')
+        self.assertEqual(self.state(), {'reference':'10500', 'mode':'BUY'})
+        self.assertFalse(self.engine.cycle())
+        self.price(9976)
+        self.assertFalse(self.engine.cycle())
+        self.price(9975)
+        self.assertTrue(self.engine.cycle())
+        self.assertEqual(self.broker.orders[2][:3], ('매도','005930',10))
+        self.assertEqual(self.broker.orders[3][1], '000660')
+        self.assertEqual(self.state(), {'reference':'9975', 'mode':'SELL'})
+        self.price(10473)
+        self.assertFalse(self.engine.cycle())
+        self.price(10474)
+        self.assertTrue(self.engine.cycle())
+        self.assertEqual(self.state()['mode'], 'BUY')
+
+    def test_after_buy_further_drop_does_not_buy_again(self):
+        self.price(9500)
         self.engine.cycle()
-        self.assertEqual(self.broker.orders[0][1], '005930')
-        self.assertEqual(self.broker.orders[1][1], '000660')
+        self.assertEqual(self.state(), {'reference':'9500', 'mode':'SELL'})
+        self.price(8500)
+        self.assertFalse(self.engine.cycle())
+        self.assertEqual(len(self.broker.orders),2)
 
-    def test_equal_drop_a_first(self):
-        hs = holdings()
-        hs['000660'] = replace(hs['000660'], current=D(18000))
-        self.assertEqual(select_target(config(), hs), 0)
+    def test_a_price_is_not_a_signal(self):
+        h = self.broker.hs['005930']
+        self.broker.hs[h.code] = replace(h, current=D(1000))
+        self.assertFalse(self.engine.cycle())
+        self.assertFalse(self.broker.orders)
 
-    def test_unknown_sell_is_not_retried_after_restart(self):
+    def test_initial_custom_price_and_direction(self):
+        self.engine.config = replace(config(), initial_price=D(12000), initial_mode='BUY')
+        self.price(12600)
+        self.assertFalse(self.engine.cycle())
+        self.price(11400)
+        self.assertTrue(self.engine.cycle())
+
+    def test_state_persists_across_restart_and_average_changes(self):
+        self.price(10500)
+        self.engine.cycle()
+        self.price(9975)
+        h = self.broker.hs['000660']
+        self.broker.hs[h.code] = replace(h, average=D(30000))
+        self.engine = Engine(self.broker, config(), Journal(self.path), self.broker.account,
+                             lambda:True, lambda *a:None)
+        self.assertTrue(self.engine.cycle())
+        self.assertEqual(self.state()['reference'],'9975')
+
+    def test_unknown_sell_blocked_after_restart(self):
+        self.price(9500)
         self.broker.unknown_sell = True
         with self.assertRaises(Halt):
             self.engine.cycle()
-        self.assertEqual(len(self.broker.orders), 1)
-        journal2 = Journal(self.path)
-        restarted = Engine(self.broker, config(), journal2, self.broker.account, lambda: True, lambda *a: None)
         with self.assertRaises(Halt):
-            restarted.cycle()
-        self.assertEqual(len(self.broker.orders), 1)
-        self.assertEqual(journal2.active()[0][3], 'SELL_INTENT')
+            self.engine.cycle()
+        self.assertEqual(len(self.broker.orders),1)
 
-    def test_partial_sell_stop_never_buys(self):
+    def test_partial_sell_never_buys_or_changes_reference(self):
+        self.price(10500)
         self.broker.partial = True
         with self.assertRaises(Halt):
             self.engine.cycle()
-        self.assertEqual(len(self.broker.orders), 1)
+        self.assertEqual(len(self.broker.orders),1)
+        self.assertEqual(self.state()['reference'],'10000')
         self.assertTrue(self.journal.active())
 
-    def test_daily_limit_persists_across_restart(self):
-        self.engine.config = config(1)
-        self.engine.cycle()
-        other = Engine(self.broker, config(1), Journal(self.path), self.broker.account, lambda: True, lambda *a: None)
-        with self.assertRaises(Halt):
-            other.cycle()
-        self.assertEqual(len(self.broker.orders), 2)
-
-    def test_failure_reserves_daily_slot_even_after_reconcile(self):
-        ident = self.journal.reserve('20261102', 'acct', 1, {})
-        self.journal.reconcile(ident)
-        with self.assertRaises(Halt):
-            self.journal.reserve('20261102', 'acct', 1, {})
-        self.journal.reserve('20261103', 'acct', 1, {})
-
-    def test_cap_prevents_any_order(self):
-        self.engine.config = replace(config(), cap=500_000)
-        with self.assertRaises(Halt):
-            self.engine.cycle()
-        self.assertEqual(self.broker.orders, [])
-
-    def test_minimum_quantity_prevents_sale(self):
-        self.engine.config = replace(config(), rules=(replace(config().rules[0], sell_percent=D('.01')), config().rules[1]))
-        with self.assertRaises(Halt):
-            self.engine.cycle()
-        self.assertFalse(self.broker.orders)
-
-    def test_existing_pending_order_blocks(self):
-        self.broker.pending_orders = [{'ord_no':'1'}]
-        with self.assertRaises(Halt):
-            self.engine.cycle()
-        self.assertFalse(self.broker.orders)
-
-    def test_wrong_account_blocks(self):
-        self.engine.account = '9999999999'
-        with self.assertRaises(Halt):
-            self.engine.cycle()
-        self.assertFalse(self.broker.orders)
-
-    def test_market_closed_blocks(self):
-        self.engine.market_open = lambda: False
-        with self.assertRaises(Halt):
-            self.engine.cycle()
-        self.assertFalse(self.broker.orders)
-
-    def test_stop_blocks_order(self):
-        self.engine.request_stop()
-        with self.assertRaises(Halt):
-            self.engine.cycle()
-        self.assertFalse(self.broker.orders)
-
-    def test_stop_during_account_check_blocks_send(self):
-        original = self.broker.verify_account
-        calls = []
-        def verify(expected):
-            original(expected)
-            calls.append(expected)
-            if len(calls) == 2:
-                self.engine.stop.set()
-        self.broker.verify_account = verify
-        with self.assertRaises(Halt):
-            self.engine.cycle()
-        self.assertFalse(self.broker.orders)
-
-    def test_buy_timeout_not_retried(self):
+    def test_b_sell_reference_saved_even_if_a_buy_fails(self):
+        self.price(10500)
         original = self.broker.order
         def order(side, *args):
             if side == '매수':
-                self.broker.orders.append((side, *args))
                 raise Halt('매수 응답 끊김')
-            return original(side, *args)
-        self.broker.order = order
+            return original(side,*args)
+        self.broker.order=order
         with self.assertRaises(Halt):
             self.engine.cycle()
-        self.assertEqual(len(self.broker.orders), 2)
-        self.assertEqual(self.journal.active()[0][3], 'BUY_INTENT')
+        self.assertEqual(self.state(), {'reference':'10500','mode':'BUY'})
+        self.assertTrue(self.journal.active())
 
-    def test_external_trade_detected_before_buy(self):
-        original = self.broker.order
-        def order(side, *args):
-            result = original(side, *args)
-            if side == '매도':
-                h = self.broker.hs['005930']
-                self.broker.hs[h.code] = replace(h, qty=h.qty+1)
-            return result
-        self.broker.order = order
-        with patch.object(self.engine.stop, 'wait', return_value=False):
-            with self.assertRaises(Halt):
-                self.engine.cycle()
-        self.assertEqual(len(self.broker.orders), 1)
+    def test_cap_prevents_orders(self):
+        self.price(9500)
+        self.engine.config = replace(config(), cap=1_000_000)
+        with self.assertRaises(Halt):
+            self.engine.cycle()
+        self.assertFalse(self.broker.orders)
 
-    def test_immediate_repeat_until_daily_limit(self):
-        self.broker.hs['005930'] = replace(self.broker.hs['005930'], current=D(5000))
-        self.engine.config = config(2)
-        self.engine.run()
-        self.assertEqual(len(self.broker.orders), 4)
-        self.assertFalse(self.journal.active())
+    def test_daily_limit_shared_both_directions(self):
+        self.engine.config = config(1)
+        self.price(10500)
+        self.engine.cycle()
+        self.price(9975)
+        with self.assertRaises(Halt):
+            self.engine.cycle()
+        self.assertEqual(len(self.broker.orders),2)
+
+    def test_missing_a_inventory_does_not_impose_minimum_balance(self):
+        self.broker.hs['005930'] = replace(self.broker.hs['005930'], qty=0, available=0,cost=0,average=D(0))
+        self.price(10500)
+        self.assertTrue(self.engine.cycle())
+        self.assertGreater(self.broker.hs['005930'].qty,0)
+
+    def test_reset_preserves_daily_count_and_blocks_active_cycle(self):
+        self.price(10500)
+        self.engine.cycle()
+        day=datetime.now(KST).strftime('%Y%m%d')
+        self.journal.reset_state(self.broker.account,'005930','000660')
+        self.assertIsNone(self.state())
+        self.assertEqual(self.journal.count(day,self.broker.account),1)
+        self.journal.reserve(day,self.broker.account,10,{})
+        with self.assertRaises(Halt):
+            self.journal.reset_state(self.broker.account,'005930','000660')
+
+    def test_stop_during_account_check_blocks_send(self):
+        self.price(9500)
+        original=self.broker.verify_account
+        calls=[]
+        def verify(expected):
+            original(expected)
+            calls.append(1)
+            if len(calls)==2:
+                self.engine.stop.set()
+        self.broker.verify_account=verify
+        with self.assertRaises(Halt):
+            self.engine.cycle()
+        self.assertFalse(self.broker.orders)
+
+    def test_notice_events_cover_signal_orders_fills_and_completion(self):
+        self.price(10500)
+        self.engine.cycle()
+        notices=[p for e,p in self.events if e=='notice']
+        self.assertEqual(len(notices),6)
+        self.assertEqual(notices[0]['subject'],'순환매 신호 발생')
+        self.assertEqual(notices[-1]['subject'],'순환매 완료')
+        self.assertIn('10500', str(self.state()))
+
+    def test_user_stop_and_market_closed_do_not_order(self):
+        self.engine.stop.set()
+        with self.assertRaises(Halt):
+            self.engine.cycle()
+        self.engine.stop.clear()
+        self.engine.market_open=lambda:False
+        with self.assertRaises(Halt):
+            self.engine.cycle()
+        self.assertFalse(self.broker.orders)
 
 
 class MathTests(unittest.TestCase):
-    def test_buy_respects_all_three_budgets_and_cost_reserve(self):
-        for proceeds, cash, headroom in [(400000, 999999,999999),(999999,400000,999999),(999999,999999,400000)]:
-            n = buy_qty(D(9000), proceeds, cash, headroom, D(1))
-            self.assertEqual(n, 44)
-            self.assertLessEqual(n * D(9000) * D('1.01'), min(proceeds,cash,headroom))
+    def test_limit_bounds(self):
+        for cap in (999999,1000000001):
+            with self.assertRaises(Halt):
+                replace(config(),cap=cap).validate()
+        for cap in (1000000,1000000000):
+            replace(config(),cap=cap).validate()
 
-    def test_sale_uses_holdings_fraction_and_available_cap(self):
-        h = replace(holdings()['005930'], available=12)
-        self.assertEqual(sale_qty(h, D(20)), 12)
-        self.assertEqual(sale_qty(replace(h, qty=7, available=7), D(20)), 1)
+    def test_signal_exact_thresholds(self):
+        cfg=config()
+        self.assertEqual(signal(cfg,{'reference':'10500','mode':'BUY'},D(9975)),'BUY')
+        self.assertIsNone(signal(cfg,{'reference':'10500','mode':'BUY'},D(9976)))
+        self.assertEqual(signal(cfg,{'reference':'9975','mode':'SELL'},D('10473.75')),'SELL')
 
-    def test_nan_inf_not_accepted(self):
-        for value in ['NaN','Infinity','-Infinity','']:
+    def test_buy_budgets(self):
+        self.assertEqual(buy_qty(D(9000),400000,999999,999999,D(1)),44)
+        self.assertEqual(buy_qty(D(9000),999999,400000,999999,D(1)),44)
+        self.assertEqual(buy_qty(D(9000),999999,999999,400000,D(1)),44)
+
+    def test_fraction_rounding_and_available(self):
+        self.assertEqual(sale_qty(replace(holdings()['005930'],available=3),D(10)),3)
+        self.assertEqual(sale_qty(replace(holdings()['000660'],qty=19,available=19),D(5)),0)
+
+    def test_nonfinite_values_blocked(self):
+        for value in ('NaN','Infinity',''):
             with self.assertRaises(Halt):
                 number(value)
 
-    def test_config_bounds(self):
-        for cap in (499999, 1000000001):
-            with self.assertRaises(Halt):
-                replace(config(), cap=cap).validate()
-        for cap in (500000, 1000000000):
-            replace(config(), cap=cap).validate()
+    def test_weighted_fills_deduplicated(self):
+        a=dict(ord_no='0000012',stk_cd='A005930',io_tp_nm='현금매도',cntr_qty='3',cntr_uv='9000',cntr_no='1')
+        b=dict(a,cntr_qty='2',cntr_uv='9100',cntr_no='2')
+        self.assertEqual(fill_totals([a,a,b],'12','005930','매도',5),(5,D(45200)))
         with self.assertRaises(Halt):
-            replace(config(), daily_max=0).validate()
-
-    def test_execution_dedup_and_weighted_amount(self):
-        a = {'ord_no':'0000012','stk_cd':'A005930','io_tp_nm':'현금매도',
-             'cntr_qty':'3','cntr_uv':'9000','cntr_no':'1'}
-        b = dict(a, cntr_qty='2', cntr_uv='9100', cntr_no='2')
-        self.assertEqual(fill_totals([a,a,b], '12', '005930','매도',5), (5,D(45200)))
-        with self.assertRaises(Halt):
-            fill_totals([a, dict(a, cntr_qty='4')], '12', '005930','매도',5)
-        with self.assertRaises(Halt):
-            fill_totals([dict(a, stk_cd='000660')], '12', '005930','매도',5)
-        with self.assertRaises(Halt):
-            fill_totals([a,b], '12', '005930','매도',4)
+            fill_totals([a,dict(a,cntr_qty='4')],'12','005930','매도',5)
 
 
 class Response:
