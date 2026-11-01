@@ -6,11 +6,13 @@ import queue
 import re
 import sys
 import threading
+import time
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
 from core import Config, Rule, D, Halt, Journal, Engine, KST
 from broker import Kiwoom, MarketClock
+from monitor import AccountMonitor
 
 SERVICE = 'KiwoomTwoStockTrader.v1'
 
@@ -34,12 +36,17 @@ class App(tk.Tk):
         super().__init__()
         self.root_path = root
         self.title('두 종목 순환매매 · 키움 실전 계좌')
-        self.geometry('1100x850')
-        self.minsize(980, 750)
+        self.geometry('1240x980')
+        self.minsize(1100, 850)
         self.configure(bg='#edf2f7')
         self.messages = queue.Queue()
         self.engine = None
         self.worker = None
+        self.monitor_worker = None
+        self.monitor_stop = None
+        self.monitor_generation = 0
+        self.last_balance = None
+        self.balance_error = None
         self.journal = Journal(root / 'journal.sqlite3')
         self.values = {}
         self.inputs = []
@@ -84,7 +91,7 @@ class App(tk.Tk):
         self.live_check.pack(anchor='w')
         actions = ttk.Frame(base)
         actions.pack(fill='x', pady=8)
-        self.read_button = ttk.Button(actions, text='연결 확인 / 잔고 조회', command=lambda: self.begin(False))
+        self.read_button = ttk.Button(actions, text='계좌 연결 / 잔고 자동갱신', command=lambda: self.begin(False))
         self.read_button.pack(side='left')
         self.start_button = ttk.Button(actions, text='실전 자동매매 시작', command=lambda: self.begin(True))
         self.start_button.pack(side='left', padx=8)
@@ -92,16 +99,47 @@ class App(tk.Tk):
         self.recover_button = ttk.Button(actions, text='미완료 거래 확인 / 해제', command=self.recover)
         self.recover_button.pack(side='right')
         ttk.Label(base, textvariable=self.status, foreground='#ad2626').pack(anchor='w', pady=5)
-        columns = ('code', 'name', 'qty', 'available', 'average', 'current', 'drop', 'cost')
-        self.table = ttk.Treeview(base, columns=columns, show='headings', height=3)
-        for key, title in zip(columns, ('코드', '종목명', '보유', '매도가능', '평균 매입가', '현재가', '하락률 %', '매입원금')):
+        balance_box = ttk.LabelFrame(base, text='계좌 전체 잔고 · 5초 간격 재조회', padding=8)
+        balance_box.pack(fill='x', pady=5)
+        self.balance_status = tk.StringVar(value='미연결 · 계좌 연결 버튼을 누르세요.')
+        self.summary_values = {}
+        summary = ttk.Frame(balance_box)
+        summary.pack(fill='x')
+        for i, (key, title) in enumerate((('deposit', '예수금'), ('cash_available', '주문가능현금(100%)'),
+                ('d2_deposit', 'D+2 추정예수금'), ('total_cost', '총매입금액'),
+                ('total_value', '총평가금액'), ('total_profit', '평가손익 / 수익률'))):
+            cell = ttk.Frame(summary, padding=6)
+            cell.grid(row=i // 3, column=i % 3, sticky='w', padx=15)
+            ttk.Label(cell, text=title).pack(anchor='w')
+            value = tk.StringVar(value='—')
+            self.summary_values[key] = value
+            ttk.Label(cell, textvariable=value, font=('맑은 고딕', 11, 'bold')).pack(anchor='w')
+        toolbar = ttk.Frame(balance_box)
+        toolbar.pack(fill='x')
+        ttk.Label(toolbar, textvariable=self.balance_status).pack(side='left')
+        ttk.Button(toolbar, text='잔고 조회 연결 해제', command=self.disconnect_monitor).pack(side='right')
+        columns = ('code', 'name', 'kind', 'qty', 'available', 'average', 'current', 'cost', 'value', 'profit', 'rate')
+        grid = ttk.Frame(balance_box)
+        grid.pack(fill='x', pady=5)
+        self.table = ttk.Treeview(grid, columns=columns, show='headings', height=5)
+        for key, title in zip(columns, ('코드', '종목명', '구분', '보유', '매도가능', '평균 매입가', '현재가', '매입금액', '평가금액', '평가손익', '수익률 %')):
             self.table.heading(key, text=title)
-            self.table.column(key, width=110, anchor='e')
-        self.table.pack(fill='x', pady=6)
+            self.table.column(key, width=95, minwidth=65, anchor='e')
+        scroll = ttk.Scrollbar(grid, orient='vertical', command=self.table.yview)
+        self.table.configure(yscrollcommand=scroll.set)
+        self.table.pack(side='left', fill='x', expand=True)
+        scroll.pack(side='right', fill='y')
         ttk.Label(base, text='거래 기록 · 중지 버튼은 이미 접수된 주문을 취소하지 않습니다. 미체결 주문은 영웅문에서 확인하세요.').pack(anchor='w')
         self.logs = tk.Text(base, height=10, bg='#142337', fg='#e1eaf5', font=('맑은 고딕', 10), state='disabled')
         self.logs.pack(fill='both', expand=True, pady=5)
         self.load()
+        if '--smoke-test' not in sys.argv:
+            try:
+                saved_credentials = self.credentials()
+            except Halt:
+                pass
+            else:
+                self.after(300, lambda: self.connect_monitor(saved_credentials))
         if self.journal.active():
             self.log('미완료 거래 기록이 있습니다. 영웅문 주문·체결·잔고를 대조한 뒤 해제하세요.')
         self.after(100, self.drain)
@@ -153,6 +191,7 @@ class App(tk.Tk):
             messagebox.showerror('저장 실패', 'Windows 보안 저장소 저장 실패. 평문으로 저장하지 않습니다.')
 
     def delete_credentials(self):
+        self.disconnect_monitor()
         try:
             store = vault()
             if store.get_password(SERVICE, 'credentials'):
@@ -194,6 +233,9 @@ class App(tk.Tk):
         self.messages.put((event, payload))
 
     def begin(self, trade):
+        if not trade:
+            self.connect_monitor()
+            return
         if self.worker and self.worker.is_alive():
             return
         try:
@@ -206,6 +248,7 @@ class App(tk.Tk):
         except Halt as exc:
             messagebox.showerror('시작할 수 없음', str(exc))
             return
+        self.connect_monitor(credentials)
         self.busy(True)
         self.status.set('실전 자동매매 연결 중' if trade else '읽기 전용 잔고 조회 중')
         # Created before background connection, so stop works during authentication.
@@ -232,6 +275,60 @@ class App(tk.Tk):
                 self.emit('stopped', None)
         self.worker = threading.Thread(target=work, daemon=True)
         self.worker.start()
+
+    def disconnect_monitor(self):
+        if self.monitor_stop:
+            self.monitor_stop.set()
+        self.monitor_generation += 1
+        self.last_balance = None
+        self.balance_error = None
+        self.balance_status.set('잔고 조회 연결 해제됨')
+        for value in self.summary_values.values():
+            value.set('—')
+        for item in self.table.get_children():
+            self.table.delete(item)
+
+    def connect_monitor(self, credentials=None):
+        try:
+            credentials = credentials or self.credentials()
+        except Halt as exc:
+            messagebox.showerror('계좌 연결', str(exc))
+            return
+        self.disconnect_monitor()
+        self.balance_status.set('계좌 연결 중 · 조회 전용 / 주문 없음')
+        self.monitor_stop = threading.Event()
+        generation = self.monitor_generation
+        broker = Kiwoom(credentials['appkey'], credentials['secret'])
+        callback = lambda event, data: self.emit(event, (generation, data))
+        monitor = AccountMonitor(broker, credentials['account'], callback, self.monitor_stop)
+        self.monitor_worker = threading.Thread(target=monitor.run, daemon=True)
+        self.monitor_worker.start()
+
+    def render_balance(self, data):
+        self.last_balance = data
+        self.balance_error = None
+        for key, value in self.summary_values.items():
+            if key == 'total_profit':
+                value.set(f'{data[key]:+,.0f}원 / {data["total_profit_rate"]:+.2f}%')
+            else:
+                value.set(f'{data[key]:,.0f}원')
+        self.balance_status.set(f'계좌 {data["account_label"]} · 마지막 갱신 {data["updated_at"]} · 5초 간격 조회')
+        selected = set(self.table.selection())
+        existing = set(self.table.get_children())
+        for i, p in enumerate(data['positions']):
+            ident = str(i)
+            values = (p['code'], p['name'], p['kind'], p['qty'], p['available'],
+                      f'{p["average"]:,.2f}', f'{p["current"]:,.0f}', f'{p["cost"]:,}',
+                      f'{p["value"]:,}', f'{p["profit"]:+,.0f}', f'{p["profit_rate"]:+.2f}')
+            if ident in existing:
+                self.table.item(ident, values=values)
+            else:
+                self.table.insert('', 'end', iid=ident, values=values)
+        valid = set(str(i) for i in range(len(data['positions'])))
+        for ident in existing - valid:
+            self.table.delete(ident)
+        if selected & valid:
+            self.table.selection_set(tuple(selected & valid))
 
     def stop(self):
         if hasattr(self, 'pending_stop'):
@@ -292,24 +389,28 @@ class App(tk.Tk):
                 if event == 'log':
                     self.log(payload)
                     self.journal.event(payload)
+                elif event in ('balance', 'balance_error'):
+                    generation, data = payload
+                    if generation != self.monitor_generation:
+                        continue
+                    if event == 'balance':
+                        self.render_balance(data)
+                    else:
+                        self.balance_error = data
+                        last = self.last_balance['updated_at'] if self.last_balance else '성공 이력 없음'
+                        self.balance_status.set('조회 실패 · 마지막 성공 ' + last + ' · ' + data)
                 elif event == 'holdings':
-                    for item in self.table.get_children():
-                        self.table.delete(item)
-                    total = 0
-                    for prefix in ('a', 'b'):
-                        symbol = self.values[prefix + '_code'].get().strip()
-                        h = payload.get(symbol)
-                        if h:
-                            self.table.insert('', 'end', values=(h.code, h.name, h.qty, h.available,
-                                f'{h.average:,.2f}', f'{h.current:,.0f}', f'{h.drop:.2f}', f'{h.cost:,}'))
-                            total += h.cost
-                    self.status.set(f'잔고 갱신 {datetime.now(KST):%H:%M:%S} / 합산 매입원금 {total:,}원')
+                    pass  # The independent account monitor owns the balance display.
                 elif event == 'stopped':
                     self.busy(False)
                     self.live.set(False)
                     self.status.set('중지됨 · 미완료 거래 있음' if self.journal.active() else '중지됨 · 시작 버튼으로 재개')
         except queue.Empty:
             pass
+        if self.last_balance and not self.balance_error:
+            age = time.monotonic() - self.last_balance['received_at']
+            if age > 15:
+                self.balance_status.set(f'갱신 지연 · 마지막 성공 {self.last_balance["updated_at"]} · {int(age)}초 경과')
         self.after(100, self.drain)
 
     def close(self):
@@ -317,6 +418,8 @@ class App(tk.Tk):
             self.stop()
             messagebox.showinfo('중지 처리 중', '중지 처리가 끝난 후 창을 닫으세요. 영웅문에서 접수 주문도 확인하세요.')
             return
+        if self.monitor_stop:
+            self.monitor_stop.set()
         self.destroy()
 
 
@@ -352,7 +455,26 @@ def smoke_test():
             try:
                 assert not app.live.get()
                 assert app.engine is None
-                assert len(app.table['columns']) == 8
+                assert len(app.table['columns']) == 11
+                assert app.monitor_worker is None
+                sample = {'positions': [], 'account_label': '******7890', 'updated_at': '10:00:00',
+                          'received_at': time.monotonic(), 'deposit': D(100000),
+                          'cash_available': D(80000), 'd2_deposit': D(90000),
+                          'total_cost': 0, 'total_value': 0, 'total_profit': D(0), 'total_profit_rate': D(0)}
+                app.render_balance(sample)
+                assert '100,000' in app.summary_values['deposit'].get()
+                assert '7890' in app.balance_status.get()
+                sample['positions'] = [{'code': '005930', 'name': '삼성전자', 'kind': '현금',
+                    'qty': 10, 'available': 8, 'average': D(10000), 'current': D(9000),
+                    'cost': 100000, 'value': 90000, 'profit': D(-10000), 'profit_rate': D(-10)}]
+                app.render_balance(sample)
+                assert len(app.table.get_children()) == 1
+                assert app.table.item('0')['values'][1] == '삼성전자'
+                sample['positions'] = []
+                app.render_balance(sample)
+                assert len(app.table.get_children()) == 0
+                app.disconnect_monitor()
+                assert app.summary_values['deposit'].get() == '—'
                 assert app.start_button['state'] != 'disabled'
                 app.update_idletasks()
                 report = {'status': 'ok', 'trading_started': False,

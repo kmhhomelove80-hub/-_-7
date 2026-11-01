@@ -1,3 +1,10 @@
+test_account_mismatch_never_reads_snapshot (test_monitor.MonitorTests.test_account_mismatch_never_reads_snapshot) ... ok
+test_masked_account_and_freshness_timestamp (test_monitor.MonitorTests.test_masked_account_and_freshness_timestamp) ... ok
+test_stop_during_request_does_not_publish_stale_result (test_monitor.MonitorTests.test_stop_during_request_does_not_publish_stale_result) ... ok
+test_transient_read_error_retries_and_closes_session (test_monitor.MonitorTests.test_transient_read_error_retries_and_closes_session) ... ok
+test_all_positions_and_negative_deposit_can_be_displayed (test_monitor.SnapshotTests.test_all_positions_and_negative_deposit_can_be_displayed) ... ok
+test_display_has_no_dependency_on_strategy_codes (test_monitor.SnapshotTests.test_display_has_no_dependency_on_strategy_codes) ... ok
+test_empty_account_zero_totals (test_monitor.SnapshotTests.test_empty_account_zero_totals) ... ok
 test_account_mismatch (test_trader.AdapterTests.test_account_mismatch) ... ok
 test_cash_uses_100_percent_cash_and_d2 (test_trader.AdapterTests.test_cash_uses_100_percent_cash_and_d2) ... ok
 test_credit_balance_rejected (test_trader.AdapterTests.test_credit_balance_rejected) ... ok
@@ -30,6 +37,6 @@ test_nan_inf_not_accepted (test_trader.MathTests.test_nan_inf_not_accepted) ... 
 test_sale_uses_holdings_fraction_and_available_cap (test_trader.MathTests.test_sale_uses_holdings_fraction_and_available_cap) ... ok
 
 ----------------------------------------------------------------------
-Ran 30 tests in 0.023s
+Ran 37 tests in 3.972s
 
 OK

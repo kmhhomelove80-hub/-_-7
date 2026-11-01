@@ -1,6 +1,7 @@
 """Kiwoom production REST adapter; query pagination; never retries orders."""
 from datetime import datetime, timedelta
 import time
+import threading
 from core import D, KST, Halt, Holding, code, number, integer, fill_totals
 
 BASE = 'https://api.kiwoom.com'
@@ -8,6 +9,9 @@ ACCOUNT_PATH = '/api/dostk/acnt'
 
 
 class Kiwoom:
+    _network_lock = threading.RLock()
+    _last_call = 0.0
+
     def __init__(self, appkey, secret, session=None):
         if session is None:
             import requests
@@ -19,14 +23,19 @@ class Kiwoom:
         self.last_call = 0.0
 
     def post(self, path, body, api_id=None, cont='N', next_key=''):
-        delay = .55 - (time.monotonic() - self.last_call)
+        # Account monitor and trading clients share one process-wide API budget.
+        with Kiwoom._network_lock:
+            return self._post(path, body, api_id, cont, next_key)
+
+    def _post(self, path, body, api_id=None, cont='N', next_key=''):
+        delay = .55 - (time.monotonic() - Kiwoom._last_call)
         if delay > 0:
             time.sleep(delay)
         headers = {'Content-Type': 'application/json;charset=UTF-8'}
         if api_id:
             headers.update({'authorization': 'Bearer ' + self.token,
                             'api-id': api_id, 'cont-yn': cont, 'next-key': next_key})
-        self.last_call = time.monotonic()
+        Kiwoom._last_call = time.monotonic()
         try:
             response = self.session.post(BASE + path, json=body, headers=headers,
                                          timeout=(5, 15), allow_redirects=False)
@@ -105,6 +114,32 @@ class Kiwoom:
                 raise Halt('잔고 수량/평균가/현재가/매입원금 오류')
             result[symbol] = Holding(symbol, row['stk_nm'], qty, available, avg, current, cost)
         return result
+
+    def account_snapshot(self):
+        # Read-only parser includes all positions, including credit positions.
+        # Trading retains its separate cash-only holdings validation.
+        rows = self.rows('kt00018', {'qry_tp': '2', 'dmst_stex_tp': 'KRX'},
+                         'acnt_evlt_remn_indv_tot')
+        positions = []
+        for row in rows:
+            qty = integer(row['rmnd_qty'])
+            if not qty:
+                continue
+            positions.append({
+                'code': str(row['stk_cd']).removeprefix('A'), 'name': row['stk_nm'],
+                'qty': qty, 'available': integer(row['trde_able_qty']),
+                'average': number(row['pur_pric']), 'current': abs(number(row['cur_prc'])),
+                'cost': integer(row['pur_amt']), 'value': integer(row['evlt_amt']),
+                'profit': number(row['evltv_prft']), 'profit_rate': number(row['prft_rt']),
+                'kind': row.get('crd_tp_nm') or ('현금' if row.get('crd_tp') == '00' else '신용/기타')})
+        deposit = self.request('kt00001', {'qry_tp': '3'})
+        cost = sum(p['cost'] for p in positions)
+        profit = sum((p['profit'] for p in positions), D(0))
+        return {'positions': positions, 'deposit': number(deposit['entr']),
+                'cash_available': number(deposit['100stk_ord_alow_amt']),
+                'd2_deposit': number(deposit['d2_entra']), 'total_cost': cost,
+                'total_value': sum(p['value'] for p in positions), 'total_profit': profit,
+                'total_profit_rate': profit / cost * 100 if cost else D(0)}
 
     def pending(self, symbols):
         rows = self.rows('ka10075', {'all_stk_tp': '0', 'trde_tp': '0',
