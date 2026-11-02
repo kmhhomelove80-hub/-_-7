@@ -10,7 +10,7 @@ import time
 import tkinter as tk
 from tkinter import ttk, messagebox
 from datetime import datetime
-from core import Config, Rule, D, Halt, Journal, Engine, KST
+from core import Config, Rule, D, Halt, Journal, Engine, KST, code
 from broker import Kiwoom, MarketClock
 from monitor import AccountMonitor
 from notifications import EmailNotifier, MailSettings, TelegramNotifier, TelegramSettings, private_chat_ids
@@ -50,6 +50,8 @@ class App(tk.Tk):
         self.balance_error = None
         self.journal = Journal(root / 'journal.sqlite3')
         self.values = {}
+        self.lookup_pending = set()
+        self.lookup_done = {}
         self.inputs = []
         self.live = tk.BooleanVar(value=False)
         self.status = tk.StringVar(value='중지됨 · 실제 주문 없음')
@@ -79,7 +81,8 @@ class App(tk.Tk):
         ttk.Label(auth, text='영웅문 ID·비밀번호는 필요하지 않습니다. 실전 REST API 키에 연결된 계좌를 확인합니다.').grid(row=2, column=0, columnspan=4, sticky='w', pady=6)
         params = ttk.LabelFrame(base, text='전략 설정', padding=10)
         params.pack(fill='x', pady=10)
-        for j, label in enumerate(('역할', '종목코드', '정확한 종목명')):
+        self.lookup_status = tk.StringVar(value='코드를 입력하고 다른 칸으로 이동하면 종목명을 조회합니다.')
+        for j, label in enumerate(('역할', '종목코드 6자리', '정확한 종목명')):
             ttk.Label(params, text=label).grid(row=0, column=j, padx=8, sticky='w')
         for i, prefix in enumerate(('a', 'b'), 1):
             ttk.Label(params, text='A · 자금 ETF' if prefix == 'a' else 'B · 변동 종목').grid(row=i, column=0)
@@ -91,6 +94,9 @@ class App(tk.Tk):
         self.field(signals, 'a_sell', 'A 매도수량 %', 0, 2, default='10')
         self.field(signals, 'rise', 'B 상승 신호 %', 1, 0, default='5')
         self.field(signals, 'b_sell', 'B 매도수량 %', 1, 2, default='5')
+        self.lookup_button = ttk.Button(params, text='종목명 자동 조회', command=lambda: self.lookup_symbols(True))
+        self.lookup_button.grid(row=0, column=3, sticky='w')
+        ttk.Label(params, textvariable=self.lookup_status).grid(row=6, column=0, columnspan=5, sticky='w')
         limits = ttk.Frame(params)
         limits.grid(row=3, column=0, columnspan=5, sticky='w', pady=10)
         self.field(limits, 'cap', '합산 매입원금 한도(원)', 0, 0, default='1000000')
@@ -170,6 +176,8 @@ class App(tk.Tk):
         widget = ttk.Entry(parent, textvariable=var, width=width, show='*' if secret else '')
         widget.grid(row=row, column=col, padx=6, pady=5, sticky='w')
         self.inputs.append(widget)
+        if name in ('a_code', 'b_code'):
+            widget.bind('<FocusOut>', lambda event, prefix=name[0]: self.lookup_symbol(prefix))
 
     def field(self, parent, name, title, row, col, secret=False, default=''):
         ttk.Label(parent, text=title).grid(row=row, column=col, sticky='w', padx=5)
@@ -237,7 +245,16 @@ class App(tk.Tk):
     def config(self):
         try:
             get = lambda k: self.values[k].get().strip()
-            rules = tuple(Rule(get(p + '_code'), get(p + '_name')) for p in ('a', 'b'))
+            rules = []
+            for prefix in ('a', 'b'):
+                try:
+                    rule = Rule(get(prefix + '_code'), get(prefix + '_name'))
+                    rule.validate()
+                except Halt as exc:
+                    raise Halt(f'{prefix.upper()} 종목 입력 확인: {exc}') from exc
+                self.values[prefix + '_code'].set(rule.code)
+                rules.append(rule)
+            rules = tuple(rules)
             cfg = Config(rules, int(get('cap').replace(',', '')), int(get('daily')),
                          D(get('reserve')), int(get('poll')),
                          D(get('drop')), D(get('rise')), D(get('a_sell')), D(get('b_sell')),
@@ -259,7 +276,7 @@ class App(tk.Tk):
     def busy(self, value):
         state = 'disabled' if value else 'normal'
         for widget in self.inputs + [self.save_button, self.delete_button, self.start_button,
-                                     self.read_button, self.recover_button, self.reset_button, self.live_check]:
+                                     self.read_button, self.recover_button, self.reset_button, self.lookup_button, self.live_check]:
             widget.configure(state=state)
 
     def emit(self, event, payload):
@@ -270,6 +287,16 @@ class App(tk.Tk):
             self.connect_monitor()
             return
         if self.worker and self.worker.is_alive():
+            return
+        try:
+            unresolved = any(self.lookup_done.get(p) != (code(self.values[p + '_code'].get()), self.values[p + '_name'].get().strip())
+                             for p in ('a', 'b'))
+        except Halt as exc:
+            messagebox.showerror('종목코드 확인', str(exc))
+            return
+        if unresolved:
+            self.lookup_symbols(True)
+            self.status.set('종목명을 조회 중입니다. 조회 결과를 확인한 후 시작 버튼을 다시 누르세요.')
             return
         try:
             cfg, credentials = self.config(), self.credentials()
@@ -338,6 +365,7 @@ class App(tk.Tk):
         monitor = AccountMonitor(broker, credentials['account'], callback, self.monitor_stop)
         self.monitor_worker = threading.Thread(target=monitor.run, daemon=True)
         self.monitor_worker.start()
+        self.lookup_symbols()
 
     def render_balance(self, data):
         self.last_balance = data
@@ -364,6 +392,45 @@ class App(tk.Tk):
             self.table.delete(ident)
         if selected & valid:
             self.table.selection_set(tuple(selected & valid))
+
+    def lookup_symbols(self, force=False):
+        for prefix in ('a', 'b'):
+            self.lookup_symbol(prefix, force)
+
+    def lookup_symbol(self, prefix, force=False):
+        if self.worker and self.worker.is_alive():
+            return
+        raw = self.values[prefix + '_code'].get()
+        if not raw.strip():
+            return
+        try:
+            symbol = code(raw)
+            credentials = self.credentials()
+        except Halt as exc:
+            if force:
+                self.lookup_status.set(f'{prefix.upper()}: {exc}')
+            return
+        self.values[prefix + '_code'].set(symbol)
+        if (prefix, symbol) in self.lookup_pending:
+            return
+        if not force and self.lookup_done.get(prefix) == (symbol, self.values[prefix + '_name'].get().strip()):
+            return
+        self.lookup_pending.add((prefix, symbol))
+        self.lookup_status.set(f'{prefix.upper()} 종목명 조회 중…')
+        def work():
+            broker = None
+            try:
+                broker = Kiwoom(credentials['appkey'], credentials['secret'])
+                broker.verify_account(credentials['account'])
+                info = broker.stock_info(symbol)
+                self.emit('symbol_lookup', (prefix, symbol, info['name'], None))
+            except Exception as exc:
+                error = str(exc) if isinstance(exc, Halt) else f'종목 조회 오류({type(exc).__name__})'
+                self.emit('symbol_lookup', (prefix, symbol, None, error))
+            finally:
+                if broker is not None:
+                    broker.session.close()
+        threading.Thread(target=work, daemon=True).start()
 
     def reset_strategy(self):
         try:
@@ -549,7 +616,22 @@ class App(tk.Tk):
         try:
             while True:
                 event, payload = self.messages.get_nowait()
-                if event == 'strategy':
+                if event == 'symbol_lookup':
+                    prefix, symbol, name, error = payload
+                    self.lookup_pending.discard((prefix, symbol))
+                    try:
+                        current = code(self.values[prefix + '_code'].get())
+                    except Halt:
+                        current = None
+                    if current != symbol or (self.worker and self.worker.is_alive()):
+                        continue
+                    if error:
+                        self.lookup_status.set(f'{prefix.upper()} 조회 실패: {error}')
+                    else:
+                        self.values[prefix + '_name'].set(name)
+                        self.lookup_done[prefix] = (symbol, name)
+                        self.lookup_status.set(f'{prefix.upper()} 확인: {symbol} / {name}')
+                elif event == 'strategy':
                     self.strategy_status.set(payload)
                 elif event == 'telegram_ids':
                     ids = payload
@@ -638,7 +720,11 @@ def smoke_test():
                 assert app.engine is None
                 for key, value in {'a_code': '005930', 'a_name': 'A종목', 'b_code': '000660', 'b_name': 'B종목', 'daily': '10'}.items():
                     app.values[key].set(value)
+                app.values['a_code'].set(' A005930 ')
+                app.values['b_code'].set('０００６６０')
                 cfg = app.config()
+                assert cfg.rules[0].code == '005930' and cfg.rules[1].code == '000660'
+                assert app.values['a_code'].get() == '005930'
                 assert cfg.cap >= 1000000 and cfg.drop_percent == 5 and cfg.a_sell_percent == 10
                 assert len(app.table['columns']) == 11
                 assert app.monitor_worker is None

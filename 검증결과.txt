@@ -15,6 +15,13 @@ test_bad_token_and_chat_id_rejected (test_notifications.TelegramTests.test_bad_t
 test_chat_lookup_deduplicates_only_private_chats (test_notifications.TelegramTests.test_chat_lookup_deduplicates_only_private_chats) ... ok
 test_push_request_uses_correct_private_chat_and_sound (test_notifications.TelegramTests.test_push_request_uses_correct_private_chat_and_sound) ... ok
 test_token_not_leaked_in_network_error (test_notifications.TelegramTests.test_token_not_leaked_in_network_error) ... ok
+test_lookup_returns_name_and_canonical_code (test_symbols.LookupTests.test_lookup_returns_name_and_canonical_code) ... ok
+test_unexpected_symbol_rejected (test_symbols.LookupTests.test_unexpected_symbol_rejected) ... ok
+test_alphanumeric_codes (test_symbols.SymbolTests.test_alphanumeric_codes) ... ok
+test_duplicate_detected_after_normalization (test_symbols.SymbolTests.test_duplicate_detected_after_normalization) ... ok
+test_no_guessing_missing_digits_or_names (test_symbols.SymbolTests.test_no_guessing_missing_digits_or_names) ... ok
+test_numeric_and_kiwoom_prefix (test_symbols.SymbolTests.test_numeric_and_kiwoom_prefix) ... ok
+test_rule_stores_canonical_code_for_api_and_holdings_lookup (test_symbols.SymbolTests.test_rule_stores_canonical_code_for_api_and_holdings_lookup) ... ok
 test_account_mismatch (test_trader.AdapterTests.test_account_mismatch) ... ok
 test_cash_uses_100_percent_cash_and_d2 (test_trader.AdapterTests.test_cash_uses_100_percent_cash_and_d2) ... ok
 test_credit_balance_rejected (test_trader.AdapterTests.test_credit_balance_rejected) ... ok
@@ -46,6 +53,6 @@ test_unknown_sell_blocked_after_restart (test_trader.StrategyTests.test_unknown_
 test_user_stop_and_market_closed_do_not_order (test_trader.StrategyTests.test_user_stop_and_market_closed_do_not_order) ... ok
 
 ----------------------------------------------------------------------
-Ran 46 tests in 3.990s
+Ran 53 tests in 5.089s
 
 OK

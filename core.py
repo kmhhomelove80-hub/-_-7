@@ -5,6 +5,7 @@ from decimal import Decimal, InvalidOperation, ROUND_FLOOR
 from datetime import datetime, timedelta, timezone
 import json
 import re
+import unicodedata
 import sqlite3
 import threading
 import time
@@ -34,11 +35,14 @@ def integer(value):
 
 
 def code(value):
-    s = str(value).strip()
+    # Normalize copy/paste formatting, without inventing missing leading digits.
+    s = unicodedata.normalize('NFKC', str(value)).upper()
+    s = ''.join(c for c in s if not c.isspace() and c not in '\u200b\u200c\u200d\ufeff')
+    s = s.strip("'\"")
     if len(s) == 7 and s.startswith('A'):
         s = s[1:]
-    if not re.fullmatch(r'[0-9]{6}', s):
-        raise Halt('6자리 국내주식 종목코드가 필요합니다.')
+    if not re.fullmatch(r'[0-9A-Z]{6}', s) or not any(c.isdigit() for c in s):
+        raise Halt('종목명 대신 6자리 종목코드(숫자·영문)를 입력하세요. 예: 005930. 앞자리 0도 필요합니다.')
     return s
 
 
@@ -46,6 +50,9 @@ def code(value):
 class Rule:
     code: str
     name: str
+
+    def __post_init__(self):
+        object.__setattr__(self, 'code', code(self.code))
 
     def validate(self):
         code(self.code)

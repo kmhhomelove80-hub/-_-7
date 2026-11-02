@@ -126,7 +126,7 @@ class Kiwoom:
             if not qty:
                 continue
             positions.append({
-                'code': str(row['stk_cd']).removeprefix('A'), 'name': row['stk_nm'],
+                'code': str(row['stk_cd'])[1:] if len(str(row['stk_cd'])) == 7 and str(row['stk_cd']).startswith('A') else str(row['stk_cd']), 'name': row['stk_nm'],
                 'qty': qty, 'available': integer(row['trde_able_qty']),
                 'average': number(row['pur_pric']), 'current': abs(number(row['cur_prc'])),
                 'cost': integer(row['pur_amt']), 'value': integer(row['evlt_amt']),
@@ -146,15 +146,21 @@ class Kiwoom:
                                     'stk_cd': '', 'stex_tp': '0'}, 'oso')
         return [r for r in rows if code(r['stk_cd']) in symbols and integer(r['oso_qty']) > 0]
 
-    def quote(self, symbol, expected_name):
+    def stock_info(self, symbol):
+        symbol = code(symbol)
         data = self.request('ka10001', {'stk_cd': symbol}, '/api/dostk/stkinfo')
-        if code(data['stk_cd']) != symbol or data['stk_nm'].strip() != expected_name.strip():
-            raise Halt('시세 종목코드/종목명이 설정과 일치하지 않습니다.')
+        if code(data['stk_cd']) != symbol or not str(data['stk_nm']).strip():
+            raise Halt('조회한 종목코드/종목명 응답이 유효하지 않습니다.')
         value = abs(number(data['cur_prc']))
         if value <= 0 or value != value.to_integral_value():
             raise Halt('현재가 오류')
-        # The last traded price already conforms to the instrument's tick size.
-        return value
+        return {'code': symbol, 'name': str(data['stk_nm']).strip(), 'current': value}
+
+    def quote(self, symbol, expected_name):
+        info = self.stock_info(symbol)
+        if info['name'] != expected_name.strip():
+            raise Halt('시세 종목코드/종목명이 설정과 일치하지 않습니다.')
+        return info['current']
 
     def cash(self):
         data = self.request('kt00001', {'qry_tp': '3'})
