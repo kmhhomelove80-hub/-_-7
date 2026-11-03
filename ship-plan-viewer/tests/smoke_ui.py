@@ -1,0 +1,43 @@
+"""Run in a Windows desktop session; all data is synthetic."""
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from unittest.mock import patch
+import tempfile
+from openpyxl import Workbook
+from app import App
+from data import load_plan, COLUMNS
+
+with tempfile.TemporaryDirectory() as d:
+    p = Path(d) / 'test.xlsx'
+    w = Workbook()
+    s = w.active
+    s.title = '선박등기구'
+    s['A4'] = '11월 3일'
+    s.merge_cells('A4:A5')
+    s['X4'] = 'PR-001'
+    s['X5'] = 'PR-002'
+    w.save(p)
+    with patch('app.filedialog.askopenfilename', return_value=''):
+        app = App()
+        app.update()
+        app.plan = load_plan(p)
+        app.scope_box.configure(values=['전체 항목'] + list(COLUMNS))
+        app.schedule_box.configure(values=['전체 일정', '11월 3일'])
+        app.schedule_values = [None, '11월 3일']
+        app.reset()
+        assert len(app.table.get_children()) == 2
+        app.query.set('pr-002')
+        app.refresh()
+        assert len(app.table.get_children()) == 1
+        app.table.selection_set('5')
+        app.show_detail()
+        assert 'PR-002' in app.detail.get('1.0', 'end')
+        app.query.set('no match')
+        app.refresh()
+        assert not app.table.get_children()
+        app.reset()
+        app.sort('X')
+        assert app.visible[0][1][6] == 'PR-001'
+        app.destroy()
+print('UI smoke test passed')

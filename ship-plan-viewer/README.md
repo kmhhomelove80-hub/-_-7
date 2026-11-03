@@ -1,0 +1,39 @@
+# 선박등기구 생산계획 조회 · v0.1 초안
+
+Windows용 데스크톱 조회 프로그램입니다. 원본 엑셀과 생산 데이터는 배포물에 포함하지 않습니다.
+
+## 실행
+
+1. ZIP을 압축 해제합니다.
+2. Python 3.11 이상을 설치합니다. Windows 설치 시 Python Launcher도 설치하세요.
+3. `start.bat`를 더블클릭합니다. 첫 실행에는 인터넷을 통해 openpyxl을 설치합니다.
+4. 자동으로 열리는 파일 선택창에서 `.xlsx` 또는 `.xlsm` 파일을 선택합니다.
+
+EXE가 GitHub Release에 있는 경우 `ShipPlanViewer.exe`만 다운로드해 실행하면 됩니다. 현재 제공하는 ZIP은 Python이 필요한 소스 실행 패키지입니다.
+
+## 기능
+
+- `선박등기구` 시트의 A, C, D, L, P, S, X, Z, AB만 표시합니다.
+- 2~3행 병합 헤더를 읽어 한 줄 헤더로 표시하며 데이터는 4행부터 읽습니다.
+- A열을 생산일정으로 취급하며 세로 병합 범위의 각 데이터 행에 같은 값을 적용합니다. 병합되지 않은 빈 셀을 임의로 이전 값으로 채우지 않습니다.
+- 날짜는 YYYY-MM-DD로 표시하고 ‘관리자라인’ 등 텍스트 일정도 유지합니다.
+- 전체/항목별 검색, 여러 단어 AND 검색, 생산일정 필터, 열별 정렬, 상세 조회.
+- 원본 행 번호 표시, 가로·세로 스크롤, 검색 결과 CSV 저장(UTF-8 BOM).
+- Ctrl+O: 파일 열기, Ctrl+F: 검색창. 파일 선택 취소 후에도 화면에서 다시 열 수 있습니다.
+- 원본은 읽기만 하며 저장하거나 수정하지 않습니다. 업로드나 서버 전송 기능은 없습니다.
+
+## 유의사항
+
+수식은 엑셀에 저장된 계산 결과를 표시합니다. 수식 셀 값이 비어 있으면 엑셀에서 재계산 후 저장해 주세요. 조건부 서식과 원본 셀 색상은 가져오지 않습니다. 다른 열에만 내용이 있고 선택한 9개 열이 비어 있는 행은 표시하지 않습니다. `.xls`는 엑셀에서 `.xlsx`로 변환해 사용하세요.
+
+## 개발 / EXE 빌드
+
+```sh
+python -m pip install -r requirements.txt
+python app.py
+python -m unittest discover -s tests -v
+python -m pip install pyinstaller==6.16.0
+pyinstaller --onefile --windowed --name ShipPlanViewer app.py
+```
+
+GitHub의 `ship-plan-viewer-v0.1` 브랜치에 게시됩니다. 저장소 루트의 `.github/workflows/ship-plan-viewer.yml`이 Windows 빌드와 UI 스모크 테스트를 실행하고 Release에 EXE와 ZIP을 게시합니다. 저장소에서 Actions 사용과 워크플로 쓰기 권한이 필요합니다.

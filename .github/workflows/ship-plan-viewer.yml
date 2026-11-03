@@ -1,0 +1,36 @@
+name: Ship Plan Viewer Windows
+on:
+  workflow_dispatch:
+  push:
+    branches: ['ship-plan-viewer-v0.1']
+    paths: ['ship-plan-viewer/**', '.github/workflows/ship-plan-viewer.yml']
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: ship-plan-viewer
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r requirements.txt pyinstaller==6.16.0
+      - run: python -m unittest discover -s tests -v
+      - name: UI smoke test
+        run: python tests/smoke_ui.py
+      - run: pyinstaller --onefile --windowed --name ShipPlanViewer app.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ShipPlanViewer-Windows
+          path: ship-plan-viewer/dist/ShipPlanViewer.exe
+      - name: Publish download
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          $tag = "shipplan-v0.1.${{ github.run_number }}"
+          Compress-Archive -Path dist/ShipPlanViewer.exe,README.md -DestinationPath ShipPlanViewer-Windows.zip
+          gh release create $tag dist/ShipPlanViewer.exe ShipPlanViewer-Windows.zip --target "${{ github.sha }}" --title "선박등기구 생산계획 조회 $tag" --notes "초안: 파일 선택, 지정 9개 열 조회, A열 병합값 채우기, 검색·일정 필터·정렬·CSV 저장. Windows x64, Python 설치 불필요."
