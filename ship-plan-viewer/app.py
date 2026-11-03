@@ -61,9 +61,11 @@ class App(tk.Tk):
         self.table = ttk.Treeview(table_frame, columns=('row', *COLUMNS), show='headings', selectmode='browse')
         for col in ('row', *COLUMNS):
             self.table.heading(col, text='원본 행' if col == 'row' else col, command=lambda c=col: self.sort(c))
-            self.table.column(col, width=80 if col == 'row' else 155, minwidth=65, stretch=False)
+            self.table.column(col, width=80 if col == 'row' else 155, minwidth=65, stretch=False, anchor='center')
         self.compact_labels = {'C': '계획일', 'D': '납기', 'L': '완료', 'P': '잔량'}
         text_font = tkfont.Font(self, font=('맑은 고딕', 11))
+        self.table_font = text_font
+        self.header_font = tkfont.Font(self, font=('맑은 고딕', 11, 'bold'))
         date_width = max(text_font.measure('2026-12-31'), text_font.measure('8888-88-88')) + 16
         for col in ('C', 'D'):
             self.table.column(col, width=date_width, minwidth=date_width, anchor='center')
@@ -144,6 +146,7 @@ class App(tk.Tk):
                 self.schedule_box.configure(values=['전체 일정'] + [s or '(일정 없음)' for s in schedules])
                 for c, h in zip(COLUMNS, plan.headers):
                     self.table.heading(c, text=self.compact_labels.get(c, h))
+                self.fit_content_columns()
                 self.reset()
                 self.export_button.configure(state='normal')
         self.after(100, self.poll)
@@ -201,6 +204,18 @@ class App(tk.Tk):
             self.detail_row.insert('', 'end', iid=str(row), values=(row, *values), tags=('selected',))
             self.set_detail(component_text)
             self.detail.yview_moveto(0)
+
+    def fit_content_columns(self):
+        if not self.plan:
+            return
+        for col in ('A', 'Z'):
+            index = COLUMNS.index(col)
+            content_width = max((self.table_font.measure(values[index])
+                                 for _, values in self.plan.rows), default=0)
+            header_width = self.header_font.measure(self.table.heading(col, 'text'))
+            width = max(content_width, header_width) + 24
+            self.table.column(col, width=width, minwidth=width, stretch=False)
+        self.sync_detail_columns()
 
     def sync_detail_columns(self, _=None):
         if not hasattr(self, 'detail_row'):

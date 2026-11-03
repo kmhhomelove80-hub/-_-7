@@ -62,6 +62,8 @@ def load_plan(path):
                     continue
             if r in schedule:
                 values[0] = display(schedule[r])
+            for index in (0, 7):
+                values[index] = ' '.join(values[index].split())
             rows.append((r, values))
             details[r] = [display(ws[f'{c}{r}'].value) for c in DETAIL_COLUMNS]
         return Plan(headers, rows, ['수식은 엑셀에 저장된 계산 결과를 표시합니다. 값이 비어 있으면 엑셀에서 재계산 후 저장해 주세요.'], details)

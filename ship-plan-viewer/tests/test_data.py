@@ -16,7 +16,7 @@ class ExtractionTests(unittest.TestCase):
             s.merge_cells('A2:A3')
             s['C2'] = '계획일'
             s.merge_cells('C2:C3')
-            s['A4'] = '관리자라인'
+            s['A4'] = '인증절차\n대기건'
             s.merge_cells('A4:A7')
             s['C4'] = datetime(2026, 11, 3)
             s['X5'] = 'PR-002'
@@ -32,7 +32,7 @@ class ExtractionTests(unittest.TestCase):
             before = path.read_bytes()
             result = load_plan(path)
             self.assertEqual([r for r, _ in result.rows], [4, 5, 7, 8])
-            self.assertEqual([v[0] for _, v in result.rows], ['관리자라인']*3 + [''])
+            self.assertEqual([v[0] for _, v in result.rows], ['인증절차 대기건']*3 + [''])
             self.assertEqual(result.rows[0][1][1], '2026-11-03')
             self.assertEqual(result.rows[1][1][3], '0')
             self.assertEqual(result.headers[:2], ['생산일정', '계획일'])

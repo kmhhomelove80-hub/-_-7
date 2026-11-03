@@ -13,7 +13,7 @@ with tempfile.TemporaryDirectory() as d:
     w = Workbook()
     s = w.active
     s.title = '선박등기구'
-    s['A4'] = '11월 3일'
+    s['A4'] = '인증절차\n대기건'
     s.merge_cells('A4:A5')
     s['X4'] = 'PR-001'
     s['X5'] = 'PR-002'
@@ -22,6 +22,7 @@ with tempfile.TemporaryDirectory() as d:
     s['Y5'] = 'PCB-5'
     s['AA5'] = 'CODE-5'
     s['V4'] = 'LIGHT-4'
+    s['Z5'] = 'VERY-LONG-ERP-CODE-0123456789-ABCDEFGHIJ'
     w.save(p)
     with patch('app.filedialog.askopenfilename', return_value=''):
         app = App()
@@ -30,6 +31,14 @@ with tempfile.TemporaryDirectory() as d:
         app.scope_box.configure(values=['전체 항목'] + list(COLUMNS))
         app.schedule_box.configure(values=['전체 일정', '11월 3일'])
         app.schedule_values = [None, '11월 3일']
+        app.fit_content_columns()
+        for col in ('A', 'Z'):
+            idx = COLUMNS.index(col)
+            assert app.table.column(col, 'width') >= max(app.table_font.measure(v[idx]) for _, v in app.plan.rows) + 20
+        for col in ('row', *COLUMNS):
+            assert app.table.column(col, 'anchor') == ('e' if col in ('L', 'P') else 'center')
+            assert app.detail_row.column(col, 'anchor') == app.table.column(col, 'anchor')
+        assert app.plan.rows[0][1][0] == '인증절차 대기건'
         app.reset()
         assert len(app.table.get_children()) == 2
         app.query.set('pr-002')
