@@ -1,8 +1,11 @@
 """Workbook extraction. The source workbook is never saved or modified."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from openpyxl import load_workbook
 from openpyxl.utils import column_index_from_string
+
+DETAIL_COLUMNS = ('V', 'W', 'Y', 'AA')
+DETAIL_HEADERS = ('광원부', '반제품', 'PCB 번호', '광원부코드')
 
 COLUMNS = ('A', 'C', 'D', 'L', 'P', 'S', 'X', 'Z', 'AB')
 
@@ -11,6 +14,7 @@ class Plan:
     headers: list[str]
     rows: list[tuple[int, list[str]]]
     warnings: list[str]
+    details: dict[int, list[str]] = field(default_factory=dict)
 
 def display(value):
     if value is None:
@@ -49,6 +53,7 @@ def load_plan(path):
                 for row in range(max(4, area.min_row), area.max_row + 1):
                     schedule[row] = ws.cell(area.min_row, 1).value
         rows = []
+        details = {}
         for r in range(4, ws.max_row + 1):
             values = [display(ws[f'{c}{r}'].value) for c in COLUMNS]
             # Ignore empty formatting rows, including those inside an A merge.
@@ -58,7 +63,8 @@ def load_plan(path):
             if r in schedule:
                 values[0] = display(schedule[r])
             rows.append((r, values))
-        return Plan(headers, rows, ['수식은 엑셀에 저장된 계산 결과를 표시합니다. 값이 비어 있으면 엑셀에서 재계산 후 저장해 주세요.'])
+            details[r] = [display(ws[f'{c}{r}'].value) for c in DETAIL_COLUMNS]
+        return Plan(headers, rows, ['수식은 엑셀에 저장된 계산 결과를 표시합니다. 값이 비어 있으면 엑셀에서 재계산 후 저장해 주세요.'], details)
     finally:
         wb.close()
 

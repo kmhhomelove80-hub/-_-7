@@ -5,7 +5,8 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk, filedialog, messagebox
-from data import COLUMNS, load_plan, matches, sort_key
+from tkinter import font as tkfont
+from data import DETAIL_HEADERS, COLUMNS, load_plan, matches, sort_key
 
 class App(tk.Tk):
     def __init__(self):
@@ -63,8 +64,19 @@ class App(tk.Tk):
         for col in ('row', *COLUMNS):
             self.table.heading(col, text='원본 행' if col == 'row' else col, command=lambda c=col: self.sort(c))
             self.table.column(col, width=80 if col == 'row' else 155, minwidth=65, stretch=False)
-        self.table.column('S', width=260)
-        self.table.column('AB', width=220)
+        self.compact_labels = {'C': '계획일', 'D': '납기', 'L': '완료', 'P': '잔량'}
+        text_font = tkfont.Font(self, font=('맑은 고딕', 11))
+        date_width = max(text_font.measure('2026-12-31'), text_font.measure('8888-88-88')) + 16
+        for col in ('C', 'D'):
+            self.table.column(col, width=date_width, minwidth=date_width, anchor='center')
+        for col in ('L', 'P'):
+            width = max(text_font.measure('999999'), text_font.measure('완료')) + 20
+            self.table.column(col, width=width, minwidth=width, anchor='e')
+        self.table.column('row', width=text_font.measure('원본 행') + 24, minwidth=55)
+        for col, label in self.compact_labels.items():
+            self.table.heading(col, text=label)
+        self.table.column('S', width=260, stretch=True)
+        self.table.column('AB', width=220, stretch=True)
         self.table.tag_configure('even', background='#f1f5fa')
         self.table.tag_configure('odd', background='#ffffff')
         vertical = ttk.Scrollbar(table_frame, orient='vertical', command=self.table.yview)
@@ -76,7 +88,7 @@ class App(tk.Tk):
         table_frame.rowconfigure(0, weight=1)
         table_frame.columnconfigure(0, weight=1)
         panel.add(table_frame, weight=5)
-        detail_frame = ttk.LabelFrame(panel, text='선택한 행 상세', padding=10)
+        detail_frame = ttk.LabelFrame(panel, text='선택한 행 상세 · 부품 정보', padding=10)
         self.detail = tk.Text(detail_frame, height=6, wrap='word', font=('맑은 고딕', 11), relief='flat', state='disabled')
         detail_scroll = ttk.Scrollbar(detail_frame, command=self.detail.yview)
         self.detail.configure(yscrollcommand=detail_scroll.set)
@@ -126,7 +138,7 @@ class App(tk.Tk):
                 self.schedule_values = [None] + schedules
                 self.schedule_box.configure(values=['전체 일정'] + [s or '(일정 없음)' for s in schedules])
                 for c, h in zip(COLUMNS, plan.headers):
-                    self.table.heading(c, text=h)
+                    self.table.heading(c, text=self.compact_labels.get(c, h))
                 self.reset()
                 self.export_button.configure(state='normal')
         self.after(100, self.poll)
@@ -157,7 +169,7 @@ class App(tk.Tk):
         for i, (r, values) in enumerate(self.visible):
             self.table.insert('', 'end', iid=str(r), values=(r, *values), tags=('even' if i % 2 == 0 else 'odd',))
         self.count.configure(text=f'검색 결과 {len(self.visible):,}건  /  전체 {len(self.plan.rows):,}건' + ('  ·  조건에 맞는 항목이 없습니다.' if not self.visible else ''))
-        self.set_detail('행을 선택하면 9개 항목의 전체 내용을 확인할 수 있습니다.')
+        self.set_detail('행을 선택하면 광원부(V) · 반제품(W) · PCB 번호(Y) · 광원부코드(AA)를 확인할 수 있습니다.')
 
     def sort(self, column):
         self.descending = not self.descending if self.sort_col == column else False
@@ -175,7 +187,10 @@ class App(tk.Tk):
         if selection and self.plan:
             row = int(selection[0])
             values = next(v for r, v in self.visible if r == row)
-            self.set_detail(f'원본 엑셀 {row}행\n' + '\n'.join(f'{h}: {v or "—"}' for h, v in zip(self.plan.headers, values)))
+            parts = self.plan.details.get(row, ['', '', '', ''])
+            component_text = '\n'.join(f'{h}: {v or "—"}' for h, v in zip(DETAIL_HEADERS, parts))
+            original_text = '\n'.join(f'{h}: {v or "—"}' for h, v in zip(self.plan.headers, values))
+            self.set_detail(f'원본 엑셀 {row}행\n{component_text}\n\n[기본 정보]\n{original_text}')
 
     def export(self):
         if not self.plan:

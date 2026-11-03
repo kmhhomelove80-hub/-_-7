@@ -17,6 +17,11 @@ with tempfile.TemporaryDirectory() as d:
     s.merge_cells('A4:A5')
     s['X4'] = 'PR-001'
     s['X5'] = 'PR-002'
+    s['V5'] = 'LIGHT-5'
+    s['W5'] = 'SEMI-5'
+    s['Y5'] = 'PCB-5'
+    s['AA5'] = 'CODE-5'
+    s['V4'] = 'LIGHT-4'
     w.save(p)
     with patch('app.filedialog.askopenfilename', return_value=''):
         app = App()
@@ -33,11 +38,20 @@ with tempfile.TemporaryDirectory() as d:
         app.table.selection_set('5')
         app.show_detail()
         assert 'PR-002' in app.detail.get('1.0', 'end')
+        for part in ('LIGHT-5', 'SEMI-5', 'PCB-5', 'CODE-5'):
+            assert part in app.detail.get('1.0', 'end')
+        assert app.table.heading('L', 'text') == '완료'
+        assert app.table.heading('P', 'text') == '잔량'
+        assert app.table.column('L', 'width') < app.table.column('X', 'width')
         app.query.set('no match')
         app.refresh()
         assert not app.table.get_children()
         app.reset()
         app.sort('X')
         assert app.visible[0][1][6] == 'PR-001'
+        app.table.selection_set('4')
+        app.show_detail()
+        assert 'LIGHT-4' in app.detail.get('1.0', 'end')
+        assert 'LIGHT-5' not in app.detail.get('1.0', 'end')
         app.destroy()
 print('UI smoke test passed')

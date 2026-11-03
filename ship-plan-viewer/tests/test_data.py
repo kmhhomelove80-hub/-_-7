@@ -20,6 +20,11 @@ class ExtractionTests(unittest.TestCase):
             s.merge_cells('A4:A7')
             s['C4'] = datetime(2026, 11, 3)
             s['X5'] = 'PR-002'
+            s['V5'] = 'LIGHT-5'
+            s['W5'] = 'SEMI-5'
+            s['Y5'] = 'PCB-5'
+            s['AA5'] = 'CODE-5'
+            s['V7'] = 'LIGHT-7'
             s['L5'] = 0
             s['S7'] = '검사 대기'
             s['X8'] = 'NO-SCHEDULE'
@@ -31,6 +36,8 @@ class ExtractionTests(unittest.TestCase):
             self.assertEqual(result.rows[0][1][1], '2026-11-03')
             self.assertEqual(result.rows[1][1][3], '0')
             self.assertEqual(result.headers[:2], ['생산일정', '계획일'])
+            self.assertEqual(result.details[5], ['LIGHT-5', 'SEMI-5', 'PCB-5', 'CODE-5'])
+            self.assertEqual(result.details[7], ['LIGHT-7', '', '', ''])
             self.assertEqual(path.read_bytes(), before)
 
     def test_missing_sheet(self):
