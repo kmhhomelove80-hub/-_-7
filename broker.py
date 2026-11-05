@@ -2,7 +2,8 @@
 from datetime import datetime, timedelta
 import time
 import threading
-from core import D, KST, Halt, Holding, code, number, integer, fill_totals
+import re
+from core import D, KST, Halt, Holding, code, number, integer, fill_totals, ApiFailure
 
 BASE = 'https://api.kiwoom.com'
 ACCOUNT_PATH = '/api/dostk/acnt'
@@ -21,6 +22,9 @@ class Kiwoom:
         self.token = None
         self.expires = datetime.min.replace(tzinfo=KST)
         self.last_call = 0.0
+        self.audit_callback = None
+        self.last_cash_snapshot = None
+        self.quote_snapshots = {}
 
     def post(self, path, body, api_id=None, cont='N', next_key=''):
         # Account monitor and trading clients share one process-wide API budget.
@@ -36,23 +40,34 @@ class Kiwoom:
             headers.update({'authorization': 'Bearer ' + self.token,
                             'api-id': api_id, 'cont-yn': cont, 'next-key': next_key})
         Kiwoom._last_call = time.monotonic()
+        is_order = api_id in ('kt10000','kt10001')
+        if is_order and self.audit_callback:
+            self.audit_callback('ORDER_TRANSMIT_ATTEMPT', {'api':api_id, 'symbol':body['stk_cd'],
+                'qty':body['ord_qty'], 'price':body['ord_uv'], 'order_type':'보통 지정가'})
         try:
             response = self.session.post(BASE + path, json=body, headers=headers,
                                          timeout=(5, 15), allow_redirects=False)
             if response.status_code != 200:
-                raise Halt(f'{api_id or "인증"}: HTTP {response.status_code}. 주문은 자동 재전송하지 않습니다.')
+                raise ApiFailure(f'{api_id or "인증"}: HTTP {response.status_code}. 접수 여부 확인 필요; 자동 재전송 없음.', 'UNKNOWN' if is_order else 'QUERY_FAILED', api_id, response.status_code)
             data = response.json()
         except Halt:
             raise
         except Exception as exc:
-            raise Halt(f'{api_id or "인증"}: 통신/응답 오류({type(exc).__name__}). 접수 여부 확인 필요; 자동 재전송 안 함.') from exc
+            raise ApiFailure(f'{api_id or "인증"}: 통신/응답 오류({type(exc).__name__}). 접수 여부 확인 필요; 자동 재전송 없음.', 'UNKNOWN' if is_order else 'QUERY_FAILED', api_id) from None
         if not isinstance(data, dict) or str(data.get('return_code')) != '0':
-            # Return messages can echo app keys; only expose the broker's numeric code.
+            # Include a scrubbed provider reason, never raw response headers/bodies.
             result = data.get('return_code', 'missing') if isinstance(data, dict) else 'invalid'
             result = str(result)
             if not result.lstrip('-').isdigit():
                 result = 'invalid'
-            raise Halt(f'{api_id or "인증"}: 키움 오류 코드 {result}. 영웅문/REST API 설정을 확인하세요.')
+            message = str(data.get('return_msg','')) if isinstance(data,dict) else ''
+            for secret in (self.appkey,self.secret,self.token):
+                if secret:
+                    message = message.replace(secret,'[REDACTED]')
+            message = re.sub(r'(?i)Bearer\s+\S+','Bearer [REDACTED]',message)
+            message = re.sub(r'(?<![0-9])[0-9]{10}(?![0-9])','[계좌/식별번호 마스킹]',message)[:500]
+            outcome = 'REJECTED' if is_order and result != 'invalid' else 'UNKNOWN' if is_order else 'QUERY_FAILED'
+            raise ApiFailure(f'{api_id or "인증"}: 키움 코드 {result} / {message}', outcome, api_id, result)
         return data, response.headers
 
     def authenticate(self):
@@ -154,6 +169,7 @@ class Kiwoom:
         value = abs(number(data['cur_prc']))
         if value <= 0 or value != value.to_integral_value():
             raise Halt('현재가 오류')
+        self.quote_snapshots[symbol] = {'price':str(value),'received_at':datetime.now(KST).isoformat()}
         return {'code': symbol, 'name': str(data['stk_nm']).strip(), 'current': value}
 
     def quote(self, symbol, expected_name):
@@ -164,6 +180,11 @@ class Kiwoom:
 
     def cash(self):
         data = self.request('kt00001', {'qry_tp': '3'})
+        self.last_cash_snapshot = {'cash_100_percent':str(number(data['100stk_ord_alow_amt'])),
+                                  'order_allowance':str(number(data['ord_alow_amt'])),
+                                  'd2_deposit':str(number(data['d2_entra'])),
+                                  'cash_unsettled':str(number(data['ch_uncla'])),
+                                  'queried_at':datetime.now(KST).isoformat()}
         if number(data['ch_uncla']) > 0 or number(data['d2_entra']) < 0:
             raise Halt('현금미수금 또는 D+2 예수금 부족 상태입니다.')
         return max(D(0), min(number(data['100stk_ord_alow_amt']), number(data['ord_alow_amt']),
@@ -178,7 +199,7 @@ class Kiwoom:
                                  'trde_tp': '0', 'cond_uv': ''}, '/api/dostk/ordr')
         order = str(data.get('ord_no', '')).strip()
         if not order.isdigit() or int(order) <= 0:
-            raise Halt('주문번호 응답 오류. 영웅문에서 접수 여부를 확인하세요.')
+            raise ApiFailure('정상 응답이지만 유효한 주문번호가 없습니다. 실제 접수 여부 확인 필요', 'UNKNOWN', api)
         return order
 
     def fills(self, order_id, symbol, side, expected):

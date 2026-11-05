@@ -8,11 +8,12 @@ import sys
 import threading
 import time
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from datetime import datetime
 from core import Config, Rule, D, Halt, Journal, Engine, KST, code
 from broker import Kiwoom, MarketClock
 from monitor import AccountMonitor
+from diagnostics import readable
 from notifications import EmailNotifier, MailSettings, TelegramNotifier, TelegramSettings, private_chat_ids
 
 SERVICE = 'KiwoomTwoStockTrader.v1'
@@ -55,6 +56,8 @@ class App(tk.Tk):
         self.inputs = []
         self.live = tk.BooleanVar(value=False)
         self.status = tk.StringVar(value='중지됨 · 실제 주문 없음')
+        self.audit_status = tk.StringVar(value='거래 진단: 대기 중 · 상세 기록은 거래 설명/진단에서 확인')
+        self.feasibility_status = tk.StringVar(value='양방향 자금/수량 예상: 자동매매 시작 시 확인')
         self.strategy_status = tk.StringVar(value='B 순환매 기준: 시작 시 저장된 기준을 불러옵니다.')
         self.telegram_settings = TelegramSettings()
         self.telegram_notifier = TelegramNotifier(self.telegram_settings, lambda text: self.emit('log', text))
@@ -119,11 +122,14 @@ class App(tk.Tk):
         ttk.Button(actions, text='자동매매 중지', command=self.stop).pack(side='left')
         self.recover_button = ttk.Button(actions, text='미완료 거래 확인 / 해제', command=self.recover)
         self.recover_button.pack(side='right')
+        ttk.Button(actions, text='거래 설명/진단', command=self.diagnostic_dialog).pack(side='right', padx=4)
         self.reset_button = ttk.Button(actions, text='B 기준 초기화', command=self.reset_strategy)
         self.reset_button.pack(side='right', padx=5)
         ttk.Button(actions, text='휴대폰 알림 설정', command=self.notification_dialog).pack(side='right', padx=5)
         ttk.Label(base, textvariable=self.status, foreground='#ad2626').pack(anchor='w', pady=5)
         ttk.Label(base, textvariable=self.strategy_status).pack(anchor='w')
+        ttk.Label(base, textvariable=self.feasibility_status, wraplength=1250).pack(anchor='w')
+        ttk.Label(base, textvariable=self.audit_status, wraplength=1250).pack(anchor='w')
         balance_box = ttk.LabelFrame(base, text='계좌 전체 잔고 · 5초 간격 재조회', padding=8)
         balance_box.pack(fill='x', pady=5)
         self.balance_status = tk.StringVar(value='미연결 · 계좌 연결 버튼을 누르세요.')
@@ -432,6 +438,64 @@ class App(tk.Tk):
                     broker.session.close()
         threading.Thread(target=work, daemon=True).start()
 
+    def diagnostic_dialog(self):
+        window = tk.Toplevel(self)
+        window.title('거래 설명 / 단계별 진단 · 인증정보 제외')
+        window.geometry('1180x760')
+        frame = ttk.Frame(window,padding=12)
+        frame.pack(fill='both',expand=True)
+        ttk.Label(frame,text='추적번호를 선택하면 신호 → 계산 → 주문 전송/접수 → 체결 → 후속 조치 순서로 표시합니다.').pack(anchor='w')
+        tree=ttk.Treeview(frame,columns=('at','trace','count'),show='headings',height=6)
+        for name,title in (('at','마지막 기록 시각'),('trace','거래 추적번호'),('count','단계 수')):
+            tree.heading(name,text=title)
+            tree.column(name,width=300)
+        tree.pack(fill='x',pady=6)
+        controls=ttk.Frame(frame)
+        controls.pack(fill='x')
+        pane=ttk.Frame(frame)
+        pane.pack(fill='both',expand=True,pady=6)
+        text=tk.Text(pane,wrap='word',font=('맑은 고딕',10))
+        bar=ttk.Scrollbar(pane,command=text.yview)
+        text.configure(yscrollcommand=bar.set)
+        text.pack(side='left',fill='both',expand=True)
+        bar.pack(side='right',fill='y')
+        def show(event=None):
+            selected=tree.selection()
+            rows=self.journal.audit_rows(selected[0]) if selected else []
+            text.configure(state='normal')
+            text.delete('1.0','end')
+            text.insert('end','\n'.join(readable(r) for r in rows) or '이전 버전 거래에는 새 진단 기록이 없습니다. 수정본에서 실행한 기록부터 표시합니다.')
+            text.configure(state='disabled')
+        def refresh():
+            old=tree.selection()
+            for ident in tree.get_children():
+                tree.delete(ident)
+            for trace,at,count in self.journal.audit_traces():
+                tree.insert('','end',iid=trace,values=(at,trace,count))
+            children=tree.get_children()
+            if children:
+                tree.selection_set(old[0] if old and old[0] in children else children[0])
+            show()
+        def export(all_rows=False):
+            selected=tree.selection()
+            rows=self.journal.audit_rows(None if all_rows or not selected else selected[0])
+            path=filedialog.asksaveasfilename(parent=window,defaultextension='.json',
+                    initialfile='거래진단.json',filetypes=[('JSON','*.json')])
+            if not path:
+                return
+            try:
+                Path(path).write_text(json.dumps({'schema':1,'exported_at':datetime.now(KST).isoformat(),
+                    'scope':'최근 최대 10000개 단계' if all_rows else '선택 추적번호',
+                    'records':rows},ensure_ascii=False,indent=2),encoding='utf-8')
+                messagebox.showinfo('진단 저장','거래 금액/주문번호가 포함됩니다. 공유 전 내용을 확인하세요.',parent=window)
+            except Exception:
+                messagebox.showerror('저장 실패','진단 파일을 저장하지 못했습니다.',parent=window)
+        ttk.Button(controls,text='새로고침',command=refresh).pack(side='left')
+        ttk.Button(controls,text='선택 거래 JSON 저장',command=export).pack(side='left',padx=8)
+        ttk.Button(controls,text='전체 진단 JSON 저장',command=lambda:export(True)).pack(side='left')
+        tree.bind('<<TreeviewSelect>>',show)
+        refresh()
+
     def reset_strategy(self):
         try:
             credentials, cfg = self.credentials(), self.config()
@@ -616,7 +680,13 @@ class App(tk.Tk):
         try:
             while True:
                 event, payload = self.messages.get_nowait()
-                if event == 'symbol_lookup':
+                if event == 'audit':
+                    self.audit_status.set(f'[{payload["trace"]}] {payload["stage"]}: {payload["explanation"]}')
+                    if payload['stage'] != 'WAITING':
+                        self.log(f'[{payload["trace"]}] {payload["explanation"]}')
+                elif event == 'feasibility':
+                    self.feasibility_status.set(' / '.join(f'{direction}: 예상 매도 {info["sell_qty"]}주 → 매수 {info["estimated_buy_qty"]}주 ({"가능 예상" if info["possible"] else "금액/수량 부족"})' for direction,info in payload.items()) + ' · 현재가 추정, 현금/체결 재확인 필요')
+                elif event == 'symbol_lookup':
                     prefix, symbol, name, error = payload
                     self.lookup_pending.discard((prefix, symbol))
                     try:
@@ -745,6 +815,8 @@ def smoke_test():
                 app.render_balance(sample)
                 assert len(app.table.get_children()) == 0
                 app.disconnect_monitor()
+                app.journal.audit('SMOKE','SIGNAL','UI 진단 표시 테스트',{'threshold':'9975'})
+                app.diagnostic_dialog()
                 app.notification_dialog()
                 app.mail_dialog()
                 app.notifier.close()

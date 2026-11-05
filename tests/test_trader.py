@@ -228,8 +228,8 @@ class StrategyTests(unittest.TestCase):
         self.engine.cycle()
         notices=[p for e,p in self.events if e=='notice']
         self.assertEqual(len(notices),6)
-        self.assertEqual(notices[0]['subject'],'순환매 신호 발생')
-        self.assertEqual(notices[-1]['subject'],'순환매 완료')
+        self.assertTrue(notices[0]['subject'].endswith('순환매 신호 발생'))
+        self.assertTrue(notices[-1]['subject'].endswith('순환매 완료'))
         self.assertIn('10500', str(self.state()))
 
     def test_user_stop_and_market_closed_do_not_order(self):
