@@ -404,7 +404,8 @@ class Engine:
                 self.audit('FILL_CONFIRMED' if done == qty else 'PARTIAL_FILL' if done else 'AWAITING_FILL',
                            f'{side} {symbol}: 확인 체결 {done}/{qty}주, 누적 {gross:,.0f}원',
                            order=order, symbol=symbol, side=side, requested_qty=qty, filled_qty=done,
-                           gross=str(gross), average=str(gross/done) if done else None)
+                           gross=str(gross), average=str(gross/done) if done else None,
+                           query_status=getattr(self.broker,'last_fill_query',None))
                 if done:
                     self.notice(f'{side} 체결 {symbol}', f'주문 {order} / 체결 {done}/{qty}주 / 누적 {gross:,.0f}원 / 평균 {gross / done:,.4f}원')
                 previous = done
@@ -554,7 +555,11 @@ class Engine:
         headroom = D(self.config.cap - total) + D(source.cost) * qty / source.qty
         self.last_stage = 'PRE_SALE_CASH_QUERY'
         cash_before = self.broker.cash()  # validate cash account, even when initially zero
+        self.last_stage = 'PRE_SALE_TARGET_CAPACITY_QUERY'
+        capacity_before = self.broker.cash_order_limit(target.code,buy_price)
         preflight = self.budget(buy_price, sell_price*qty, cash_before+sell_price*qty, headroom)
+        preflight['target_capacity_before_sale'] = capacity_before
+        preflight['target_capacity_note'] = '매도 전 현재 한도. 매도금 반영 전이므로 후속 매수 확정 수량이 아닙니다.'
         self.audit('PRE_SALE_BUDGET', '매도 전 매수 가능수량 사전 검사. 현금은 매도대금 반영을 가정한 예상값입니다.',
                    budget=preflight, cash_before=str(cash_before), sell_price=str(sell_price))
         if preflight['quantity'] < 1:
@@ -585,7 +590,6 @@ class Engine:
         refreshed = self.await_balances(source.code, source.qty - qty, target.code, target.qty)
         self.check()
         current_total = sum(refreshed[r.code].cost for r in self.config.rules if r.code in refreshed)
-        buy_price = self.broker.quote(target.code, target.name)
         n, buy_price = self.funded_quantity(target, proceeds, self.config.cap-current_total)
         if n < 1:
             raise Halt('매도 후 실제 매수 가능수량이 1주 미만입니다. 후속 매수 주문은 전송하지 않았습니다.')
@@ -624,7 +628,13 @@ class Engine:
             price = self.broker.quote(target.code,target.name)
             self.last_stage = 'POST_SALE_CASH_QUERY'
             cash = self.broker.cash()
-            budget = self.budget(price,proceeds,cash,headroom)
+            self.last_stage = 'TARGET_CASH_CAPACITY_QUERY'
+            capacity = self.broker.cash_order_limit(target.code, price)
+            effective_cash = min(cash, number(capacity['amount']))
+            budget = self.budget(price,proceeds,effective_cash,headroom)
+            budget['account_cash'] = str(cash)
+            budget['target_100_percent_capacity'] = capacity
+            budget['quantity'] = min(budget['quantity'], capacity['quantity'])
             self.audit('POST_SALE_BUDGET', '실제 매도금·조회 현금·한도 여유 중 최소 금액으로 후속 매수수량 계산',
                        target=target.code, attempt=attempt+1, budget=budget)
             if budget['quantity'] > 0:

@@ -187,8 +187,21 @@ class Kiwoom:
                                   'queried_at':datetime.now(KST).isoformat()}
         if number(data['ch_uncla']) > 0 or number(data['d2_entra']) < 0:
             raise Halt('현금미수금 또는 D+2 예수금 부족 상태입니다.')
-        return max(D(0), min(number(data['100stk_ord_alow_amt']), number(data['ord_alow_amt']),
-                             number(data['d2_entra'])))
+        # General ord_alow_amt is recorded for diagnosis, not an additional cap
+        # on 100% cash funds. The target-specific 100% capacity is checked below.
+        self.last_cash_snapshot['cash_policy'] = 'min(100stk_ord_alow_amt,d2_entra), then kt00010 100% target cap'
+        return max(D(0), min(number(data['100stk_ord_alow_amt']), number(data['d2_entra'])))
+
+    def cash_order_limit(self, symbol, price):
+        data = self.request('kt00010', {'stk_cd':code(symbol), 'trde_tp':'2', 'uv':str(int(price)),
+                                       'trde_qty':'','io_amt':'','exp_buy_unp':str(int(price))})
+        unsettled = number(data['uncla'])
+        if unsettled > 0:
+            raise Halt('종목별 주문가능금액 조회에 미수금이 있습니다.')
+        return {'quantity':integer(data['profa_100ord_alowq']),
+                'amount':str(max(D(0),number(data['profa_100ord_alow_amt']))),
+                'unsettled':str(unsettled), 'api':'kt00010',
+                'queried_at':datetime.now(KST).isoformat(), 'symbol':code(symbol),'price':str(price)}
 
     def order(self, side, symbol, qty, price):
         if side not in ('매수', '매도') or not isinstance(qty, int) or qty <= 0 or price <= 0:
@@ -203,13 +216,19 @@ class Kiwoom:
         return order
 
     def fills(self, order_id, symbol, side, expected):
-        rows = self.rows('kt00009', {'ord_dt': datetime.now(KST).strftime('%Y%m%d'),
-                                    'stk_bond_tp': '1', 'mrkt_tp': '0',
-                                    'sell_tp': '1' if side == '매도' else '2', 'qry_tp': '1',
-                                    'stk_cd': symbol, 'fr_ord_no': '', 'dmst_stex_tp': 'KRX'},
-                         'acnt_ord_cntr_prst_array')
+        self.last_fill_query = None
+        try:
+            rows = self.rows('kt00009', {'ord_dt': datetime.now(KST).strftime('%Y%m%d'),
+                                        'stk_bond_tp': '1', 'mrkt_tp': '0',
+                                        'sell_tp': '1' if side == '매도' else '2', 'qry_tp': '1',
+                                        'stk_cd': symbol, 'fr_ord_no': '', 'dmst_stex_tp': 'KRX'},
+                             'acnt_ord_cntr_prst_array')
+        except ApiFailure as exc:
+            if exc.api == 'kt00009' and exc.error_code == '20' and re.search(r'\b501724\s*:', str(exc)):
+                self.last_fill_query = {'status':'NO_EXECUTIONS_YET','code':'501724','api':'kt00009'}
+                return 0, D(0)
+            raise
         return fill_totals(rows, order_id, symbol, side, expected)
-
 
 class MarketClock:
     """KRX holiday/special-open calendar; exclude first minute and closing auction."""

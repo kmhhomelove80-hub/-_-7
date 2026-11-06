@@ -13,7 +13,7 @@ from datetime import datetime
 from core import Config, Rule, D, Halt, Journal, Engine, KST, code
 from broker import Kiwoom, MarketClock
 from monitor import AccountMonitor
-from diagnostics import readable
+from diagnostics import readable, trade_history
 from notifications import EmailNotifier, MailSettings, TelegramNotifier, TelegramSettings, private_chat_ids
 
 SERVICE = 'KiwoomTwoStockTrader.v1'
@@ -38,8 +38,8 @@ class App(tk.Tk):
         super().__init__()
         self.root_path = root
         self.title('두 종목 순환매매 · 키움 실전 계좌')
-        self.geometry('1360x1040')
-        self.minsize(1250, 900)
+        self.geometry(f'{min(1280,self.winfo_screenwidth()-60)}x{min(860,self.winfo_screenheight()-90)}')
+        self.minsize(980, 640)
         self.configure(bg='#edf2f7')
         self.messages = queue.Queue()
         self.engine = None
@@ -66,13 +66,21 @@ class App(tk.Tk):
         style = ttk.Style(self)
         style.theme_use('clam')
         style.configure('TLabel', font=('맑은 고딕', 10))
-        style.configure('TButton', font=('맑은 고딕', 10), padding=7)
-        style.configure('Title.TLabel', font=('맑은 고딕', 20, 'bold'))
-        base = ttk.Frame(self, padding=20)
+        style.configure('TButton', font=('맑은 고딕', 9), padding=4)
+        style.configure('Title.TLabel', font=('맑은 고딕', 15, 'bold'))
+        base = ttk.Frame(self, padding=8)
         base.pack(fill='both', expand=True)
         ttk.Label(base, text='두 종목 순환매매', style='Title.TLabel').pack(anchor='w')
-        ttk.Label(base, text='실전 전용 · A: 자금 보관 ETF / B: 변동 종목 · B 직전 체결가 기준 순환매').pack(anchor='w', pady=(4, 12))
-        auth = ttk.LabelFrame(base, text='실전 계좌 연결 / Windows 보안 저장소', padding=10)
+        ttk.Label(base, text='실전 전용 · A: 자금 보관 ETF / B: 변동 종목 · B 직전 체결가 기준 순환매').pack(anchor='w', pady=(0, 3))
+        self.pages = ttk.Notebook(base)
+        self.pages.pack(fill='both',expand=True)
+        self.dashboard = ttk.Frame(self.pages,padding=4)
+        self.settings_page = ttk.Frame(self.pages,padding=6)
+        self.account_page = ttk.Frame(self.pages,padding=6)
+        self.pages.add(self.dashboard,text='거래 현황 · 잔고/거래내역')
+        self.pages.add(self.settings_page,text='전략 설정')
+        self.pages.add(self.account_page,text='계좌 연결 설정')
+        auth = ttk.LabelFrame(self.account_page, text='실전 계좌 연결 / Windows 보안 저장소', padding=10)
         auth.pack(fill='x')
         self.field(auth, 'appkey', 'App Key', 0, 0, secret=True)
         self.field(auth, 'secret', 'Secret Key', 0, 2, secret=True)
@@ -82,7 +90,7 @@ class App(tk.Tk):
         self.delete_button = ttk.Button(auth, text='저장 인증정보 삭제', command=self.delete_credentials)
         self.delete_button.grid(row=1, column=3, padx=6)
         ttk.Label(auth, text='영웅문 ID·비밀번호는 필요하지 않습니다. 실전 REST API 키에 연결된 계좌를 확인합니다.').grid(row=2, column=0, columnspan=4, sticky='w', pady=6)
-        params = ttk.LabelFrame(base, text='전략 설정', padding=10)
+        params = ttk.LabelFrame(self.settings_page, text='전략 설정', padding=10)
         params.pack(fill='x', pady=10)
         self.lookup_status = tk.StringVar(value='코드를 입력하고 다른 칸으로 이동하면 종목명을 조회합니다.')
         for j, label in enumerate(('역할', '종목코드 6자리', '정확한 종목명')):
@@ -90,18 +98,18 @@ class App(tk.Tk):
         for i, prefix in enumerate(('a', 'b'), 1):
             ttk.Label(params, text='A · 자금 ETF' if prefix == 'a' else 'B · 변동 종목').grid(row=i, column=0)
             for j, suffix in enumerate(('code', 'name'), 1):
-                self.entry(params, prefix + '_' + suffix, i, j, width=23)
+                self.entry(params, prefix + '_' + suffix, i, j, width=14 if suffix=='code' else 32)
         signals = ttk.Frame(params)
-        signals.grid(row=1, column=3, rowspan=2, sticky='w')
+        signals.grid(row=3,column=0,columnspan=4,sticky='w',pady=4)
         self.field(signals, 'drop', 'B 하락 신호 %', 0, 0, default='5')
         self.field(signals, 'a_sell', 'A 매도수량 %', 0, 2, default='10')
         self.field(signals, 'rise', 'B 상승 신호 %', 1, 0, default='5')
         self.field(signals, 'b_sell', 'B 매도수량 %', 1, 2, default='5')
         self.lookup_button = ttk.Button(params, text='종목명 자동 조회', command=lambda: self.lookup_symbols(True))
         self.lookup_button.grid(row=0, column=3, sticky='w')
-        ttk.Label(params, textvariable=self.lookup_status).grid(row=6, column=0, columnspan=5, sticky='w')
+        ttk.Label(params, textvariable=self.lookup_status).grid(row=7, column=0, columnspan=5, sticky='w')
         limits = ttk.Frame(params)
-        limits.grid(row=3, column=0, columnspan=5, sticky='w', pady=10)
+        limits.grid(row=4,column=0,columnspan=5,sticky='w',pady=4)
         self.field(limits, 'cap', '합산 매입원금 한도(원)', 0, 0, default='1000000')
         self.field(limits, 'daily', '하루 최대 사이클', 0, 2)
         self.field(limits, 'reserve', '비용 예비율 %', 1, 0, default='1')
@@ -109,29 +117,31 @@ class App(tk.Tk):
         self.field(limits, 'initial_price', '첫 B 기준가(0=평균가)', 2, 0, default='0')
         ttk.Label(limits, text='첫 방향 BOTH / BUY / SELL').grid(row=2, column=2)
         self.entry(limits, 'initial_mode', 2, 3, default='BOTH')
-        ttk.Label(params, text='한도 1,000,000~1,000,000,000원 · A/B 합산 매입원금 · A 최소 잔고 없음 · 매도수량 소수점 버림').grid(row=4, column=0, columnspan=5, sticky='w')
-        ttk.Label(params, text='지정가: 주문 직전 현재가 / 60초 내 전량 미체결 시 정지 / 장 마감 10분 전부터 새 주문 차단').grid(row=5, column=0, columnspan=5, sticky='w')
+        ttk.Label(params, text='한도 1,000,000~1,000,000,000원 · A/B 합산 매입원금 · A 최소 잔고 없음 · 매도수량 소수점 버림').grid(row=5,column=0,columnspan=5,sticky='w')
+        ttk.Label(params, text='지정가: 주문 직전 현재가 / 60초 내 전량 미체결 시 정지 / 장 마감 10분 전부터 새 주문 차단').grid(row=6,column=0,columnspan=5,sticky='w')
         self.live_check = ttk.Checkbutton(base, text='실전 계좌에서 실제 매도·매수 주문을 실행합니다.', variable=self.live)
-        self.live_check.pack(anchor='w')
+        self.live_check.pack(anchor='w',before=self.pages)
         actions = ttk.Frame(base)
-        actions.pack(fill='x', pady=8)
+        actions.pack(fill='x', pady=3,before=self.pages)
         self.read_button = ttk.Button(actions, text='계좌 연결 / 잔고 자동갱신', command=lambda: self.begin(False))
         self.read_button.pack(side='left')
         self.start_button = ttk.Button(actions, text='실전 자동매매 시작', command=lambda: self.begin(True))
         self.start_button.pack(side='left', padx=8)
         ttk.Button(actions, text='자동매매 중지', command=self.stop).pack(side='left')
-        self.recover_button = ttk.Button(actions, text='미완료 거래 확인 / 해제', command=self.recover)
-        self.recover_button.pack(side='right')
+        self.recover_button = ttk.Button(self.settings_page, text='미완료 거래 확인 / 해제', command=self.recover)
+        self.recover_button.pack(anchor='w',pady=4)
         ttk.Button(actions, text='거래 설명/진단', command=self.diagnostic_dialog).pack(side='right', padx=4)
-        self.reset_button = ttk.Button(actions, text='B 기준 초기화', command=self.reset_strategy)
-        self.reset_button.pack(side='right', padx=5)
-        ttk.Button(actions, text='휴대폰 알림 설정', command=self.notification_dialog).pack(side='right', padx=5)
-        ttk.Label(base, textvariable=self.status, foreground='#ad2626').pack(anchor='w', pady=5)
-        ttk.Label(base, textvariable=self.strategy_status).pack(anchor='w')
-        ttk.Label(base, textvariable=self.feasibility_status, wraplength=1250).pack(anchor='w')
-        ttk.Label(base, textvariable=self.audit_status, wraplength=1250).pack(anchor='w')
-        balance_box = ttk.LabelFrame(base, text='계좌 전체 잔고 · 5초 간격 재조회', padding=8)
-        balance_box.pack(fill='x', pady=5)
+        self.reset_button = ttk.Button(self.settings_page, text='B 기준 초기화', command=self.reset_strategy)
+        self.reset_button.pack(anchor='w',pady=4)
+        ttk.Button(self.account_page,text='휴대폰 알림 설정',command=self.notification_dialog).pack(anchor='w',pady=5)
+        ttk.Label(self.dashboard, textvariable=self.status, foreground='#ad2626').pack(anchor='w', pady=1)
+        ttk.Label(self.dashboard, textvariable=self.strategy_status,wraplength=1180).pack(anchor='w')
+        ttk.Label(self.dashboard, textvariable=self.feasibility_status, wraplength=1180).pack(anchor='w')
+        ttk.Label(self.dashboard, textvariable=self.audit_status, wraplength=1180).pack(anchor='w')
+        self.main_panes = ttk.Panedwindow(self.dashboard,orient='vertical')
+        self.main_panes.pack(fill='both',expand=True,pady=3)
+        balance_box = ttk.LabelFrame(self.main_panes, text='계좌 전체 잔고 · 5초 간격 재조회', padding=4)
+        self.main_panes.add(balance_box,weight=1)
         self.balance_status = tk.StringVar(value='미연결 · 계좌 연결 버튼을 누르세요.')
         self.summary_values = {}
         summary = ttk.Frame(balance_box)
@@ -139,30 +149,51 @@ class App(tk.Tk):
         for i, (key, title) in enumerate((('deposit', '예수금'), ('cash_available', '주문가능현금(100%)'),
                 ('d2_deposit', 'D+2 추정예수금'), ('total_cost', '총매입금액'),
                 ('total_value', '총평가금액'), ('total_profit', '평가손익 / 수익률'))):
-            cell = ttk.Frame(summary, padding=6)
-            cell.grid(row=i // 3, column=i % 3, sticky='w', padx=15)
+            cell = ttk.Frame(summary, padding=2)
+            cell.grid(row=0, column=i, sticky='w', padx=5)
+            summary.columnconfigure(i,weight=1)
             ttk.Label(cell, text=title).pack(anchor='w')
             value = tk.StringVar(value='—')
             self.summary_values[key] = value
-            ttk.Label(cell, textvariable=value, font=('맑은 고딕', 11, 'bold')).pack(anchor='w')
+            ttk.Label(cell, textvariable=value, font=('맑은 고딕', 10, 'bold')).pack(anchor='w')
         toolbar = ttk.Frame(balance_box)
         toolbar.pack(fill='x')
         ttk.Label(toolbar, textvariable=self.balance_status).pack(side='left')
         ttk.Button(toolbar, text='잔고 조회 연결 해제', command=self.disconnect_monitor).pack(side='right')
         columns = ('code', 'name', 'kind', 'qty', 'available', 'average', 'current', 'cost', 'value', 'profit', 'rate')
         grid = ttk.Frame(balance_box)
-        grid.pack(fill='x', pady=5)
+        grid.pack(fill='both',expand=True,pady=3)
         self.table = ttk.Treeview(grid, columns=columns, show='headings', height=5)
         for key, title in zip(columns, ('코드', '종목명', '구분', '보유', '매도가능', '평균 매입가', '현재가', '매입금액', '평가금액', '평가손익', '수익률 %')):
             self.table.heading(key, text=title)
             self.table.column(key, width=95, minwidth=65, anchor='e')
         scroll = ttk.Scrollbar(grid, orient='vertical', command=self.table.yview)
         self.table.configure(yscrollcommand=scroll.set)
-        self.table.pack(side='left', fill='x', expand=True)
+        self.table.pack(side='left', fill='both', expand=True)
         scroll.pack(side='right', fill='y')
-        ttk.Label(base, text='거래 기록 · 중지 버튼은 이미 접수된 주문을 취소하지 않습니다. 미체결 주문은 영웅문에서 확인하세요.').pack(anchor='w')
-        self.logs = tk.Text(base, height=10, bg='#142337', fg='#e1eaf5', font=('맑은 고딕', 10), state='disabled')
-        self.logs.pack(fill='both', expand=True, pady=5)
+        history_box=ttk.LabelFrame(self.main_panes,text='주문·체결 내역 / 거래 진행 로그',padding=4)
+        self.main_panes.add(history_box,weight=1)
+        self.history_pages=ttk.Notebook(history_box)
+        self.history_pages.pack(fill='both',expand=True)
+        history_frame=ttk.Frame(self.history_pages)
+        log_frame=ttk.Frame(self.history_pages)
+        self.history_pages.add(history_frame,text='주문·체결 내역')
+        self.history_pages.add(log_frame,text='실시간 진행 로그')
+        columns=('time','name','side','filled','requested','price','amount','status','order')
+        self.history_table=ttk.Treeview(history_frame,columns=columns,show='headings',height=5)
+        for key,title in zip(columns,('시각','종목','매수/매도','체결수량','주문수량','평균가/지정가','체결금액','상태','주문번호')):
+            self.history_table.heading(key,text=title)
+            self.history_table.column(key,width=110,minwidth=55,anchor='e')
+        history_scroll=ttk.Scrollbar(history_frame,command=self.history_table.yview)
+        self.history_table.configure(yscrollcommand=history_scroll.set)
+        self.history_table.pack(side='left',fill='both',expand=True)
+        history_scroll.pack(side='right',fill='y')
+        self.logs = tk.Text(log_frame,height=7,bg='#142337',fg='#e1eaf5',font=('맑은 고딕',10),state='disabled',wrap='word')
+        log_scroll=ttk.Scrollbar(log_frame,command=self.logs.yview)
+        self.logs.configure(yscrollcommand=log_scroll.set)
+        self.logs.pack(side='left',fill='both',expand=True)
+        log_scroll.pack(side='right',fill='y')
+        self.render_history()
         self.load()
         if '--smoke-test' not in sys.argv:
             try:
@@ -438,6 +469,19 @@ class App(tk.Tk):
                     broker.session.close()
         threading.Thread(target=work, daemon=True).start()
 
+    def render_history(self):
+        rows=trade_history(self.journal.audit_rows())[:500]
+        selected=self.history_table.selection()
+        for ident in self.history_table.get_children():
+            self.history_table.delete(ident)
+        status={'ORDER_ACCEPTED':'접수','PARTIAL_FILL':'부분체결','FILL_CONFIRMED':'전량체결','ORDER_REJECTED':'거절','ORDER_UNKNOWN':'접수 불명'}
+        for i,row in enumerate(rows):
+            price=row.get('average') or row.get('price') or row.get('limit_price')
+            self.history_table.insert('','end',iid=str(i),values=(row['at'][11:19],row.get('name',row.get('symbol','')),
+                row.get('side',''),row.get('filled_qty',0),row.get('requested_qty',row.get('qty','')),
+                f'{D(price):,.2f}' if price else '—',f'{D(row["gross"]):,.0f}' if row.get('gross') else '—',
+                status.get(row['stage'],row['stage']),row.get('order','—')))
+
     def diagnostic_dialog(self):
         window = tk.Toplevel(self)
         window.title('거래 설명 / 단계별 진단 · 인증정보 제외')
@@ -677,10 +721,12 @@ class App(tk.Tk):
         self.logs.configure(state='disabled')
 
     def drain(self):
+        history_dirty=False
         try:
             while True:
                 event, payload = self.messages.get_nowait()
                 if event == 'audit':
+                    history_dirty = history_dirty or payload['stage'] in ('ORDER_ACCEPTED','PARTIAL_FILL','FILL_CONFIRMED','ORDER_REJECTED','ORDER_UNKNOWN')
                     self.audit_status.set(f'[{payload["trace"]}] {payload["stage"]}: {payload["explanation"]}')
                     if payload['stage'] != 'WAITING':
                         self.log(f'[{payload["trace"]}] {payload["explanation"]}')
@@ -735,6 +781,8 @@ class App(tk.Tk):
                     self.status.set('중지됨 · 미완료 거래 있음' if self.journal.active() else '중지됨 · 시작 버튼으로 재개')
         except queue.Empty:
             pass
+        if history_dirty:
+            self.render_history()
         if self.last_balance and not self.balance_error:
             age = time.monotonic() - self.last_balance['received_at']
             if age > 15:
@@ -815,6 +863,15 @@ def smoke_test():
                 app.render_balance(sample)
                 assert len(app.table.get_children()) == 0
                 app.disconnect_monitor()
+                app.geometry('1024x720')
+                app.pages.select(app.dashboard)
+                app.update()
+                assert app.table.winfo_height() >= 80, ('balance table clipped',app.table.winfo_height())
+                assert app.history_table.winfo_height() >= 80, ('history clipped',app.history_table.winfo_height())
+                app.history_pages.select(1)
+                app.update()
+                assert app.logs.winfo_height() >= 80
+                app.history_pages.select(0)
                 app.journal.audit('SMOKE','SIGNAL','UI 진단 표시 테스트',{'threshold':'9975'})
                 app.diagnostic_dialog()
                 app.notification_dialog()

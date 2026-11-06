@@ -70,6 +70,16 @@ class DiagnosticsTests(unittest.TestCase):
         self.assertTrue(halted['data']['incomplete_cycle'])
         self.assertEqual(sum(r['stage']=='POST_SALE_BUDGET' for r in self.rows()),11)
 
+    def test_target_capacity_can_prevent_purchase_even_with_account_cash(self):
+        self.broker.cash_order_limit=lambda *args:{'quantity':0,'amount':'0','api':'kt00010'}
+        with patch.object(self.engine.stop,'wait',return_value=False):
+            with self.assertRaises(Halt):
+                self.engine.cycle()
+        self.assertEqual(len(self.broker.orders),1)
+        self.assertEqual(self.rows()[-1]['data']['orders']['BUY'],'NOT_SENT')
+        budget=next(row['data']['budget'] for row in self.rows() if row['stage']=='POST_SALE_BUDGET')
+        self.assertEqual(budget['target_100_percent_capacity']['quantity'],0)
+
     def test_order_rejection_has_distinct_state_and_no_retry(self):
         original=self.broker.order
         def order(side,*args):

@@ -2,6 +2,8 @@
 import json
 
 LABELS = {
+    'account_cash':'100% 현금·D+2 기준 계좌 현금','target_100_percent_capacity':'매수 대상 종목별 100% 주문가능 한도',
+    'query_status':'체결조회 상태',
     'quote_snapshots':'시세 조회값/수신 시각','received_at':'시세 수신 시각',
     'post_holdings':'거래 후 보유 상태','average_cost':'매도 종목 평균 매입가',
     'estimated_profit_before_costs':'원가비례 예상 매도손익(수수료·세금 차감 전)',
@@ -44,3 +46,25 @@ def readable(record):
     return (f"[{record['trace']}] {record['at']}\n단계: {record['stage']}\n"
             f"설명: {record['explanation']}\n" +
             json.dumps(translate(record['data']),ensure_ascii=False,indent=2) + '\n')
+
+
+def trade_history(records):
+    """One row per trace/leg; cumulative fills replace rather than double count."""
+    names = {}
+    orders = {}
+    for record in records:
+        data = record['data']
+        if record['stage'] == 'SIGNAL':
+            for item in data.get('config_snapshot', {}).values():
+                if isinstance(item,dict) and 'code' in item:
+                    names[item['code']] = item.get('name',item['code'])
+        if record['stage'] not in ('ORDER_ACCEPTED','PARTIAL_FILL','FILL_CONFIRMED','ORDER_REJECTED','ORDER_UNKNOWN'):
+            continue
+        side, symbol = data.get('side',''), data.get('symbol','')
+        key = (record['trace'], side)
+        previous = orders.get(key,{})
+        previous.update(data)
+        previous.update(trace=record['trace'], at=record['at'], stage=record['stage'], explanation=record['explanation'])
+        previous['name'] = names.get(symbol,symbol)
+        orders[key] = previous
+    return sorted(orders.values(),key=lambda x:x['at'], reverse=True)

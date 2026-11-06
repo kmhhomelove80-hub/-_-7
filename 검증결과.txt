@@ -3,6 +3,7 @@ test_cash_never_available_halts_with_buy_not_sent (test_diagnostics.DiagnosticsT
 test_cash_only_delay_rechecks_without_selling_again (test_diagnostics.DiagnosticsTests.test_cash_only_delay_rechecks_without_selling_again) ... ok
 test_order_rejection_has_distinct_state_and_no_retry (test_diagnostics.DiagnosticsTests.test_order_rejection_has_distinct_state_and_no_retry) ... ok
 test_success_explains_reason_calculation_orders_and_new_basis (test_diagnostics.DiagnosticsTests.test_success_explains_reason_calculation_orders_and_new_basis) ... ok
+test_target_capacity_can_prevent_purchase_even_with_account_cash (test_diagnostics.DiagnosticsTests.test_target_capacity_can_prevent_purchase_even_with_account_cash) ... ok
 test_unknown_response_distinct_from_not_sent (test_diagnostics.DiagnosticsTests.test_unknown_response_distinct_from_not_sent) ... ok
 test_timeout_is_unknown_not_rejected (test_diagnostics.WireTests.test_timeout_is_unknown_not_rejected) ... ok
 test_wire_attempt_recorded_and_business_rejection_scrubbed (test_diagnostics.WireTests.test_wire_attempt_recorded_and_business_rejection_scrubbed) ... ok
@@ -23,6 +24,11 @@ test_bad_token_and_chat_id_rejected (test_notifications.TelegramTests.test_bad_t
 test_chat_lookup_deduplicates_only_private_chats (test_notifications.TelegramTests.test_chat_lookup_deduplicates_only_private_chats) ... ok
 test_push_request_uses_correct_private_chat_and_sound (test_notifications.TelegramTests.test_push_request_uses_correct_private_chat_and_sound) ... ok
 test_token_not_leaked_in_network_error (test_notifications.TelegramTests.test_token_not_leaked_in_network_error) ... ok
+test_general_allowance_does_not_override_100_percent_cash (test_purchase_regression.PurchaseRegressionTests.test_general_allowance_does_not_override_100_percent_cash) ... ok
+test_history_merges_cumulative_fills_without_double_counting (test_purchase_regression.PurchaseRegressionTests.test_history_merges_cumulative_fills_without_double_counting) ... ok
+test_no_execution_data_is_polled_not_order_retried (test_purchase_regression.PurchaseRegressionTests.test_no_execution_data_is_polled_not_order_retried) ... ok
+test_other_errors_are_not_treated_as_empty_fills (test_purchase_regression.PurchaseRegressionTests.test_other_errors_are_not_treated_as_empty_fills) ... ok
+test_target_specific_capacity_uses_only_100_percent_fields (test_purchase_regression.PurchaseRegressionTests.test_target_specific_capacity_uses_only_100_percent_fields) ... ok
 test_lookup_returns_name_and_canonical_code (test_symbols.LookupTests.test_lookup_returns_name_and_canonical_code) ... ok
 test_unexpected_symbol_rejected (test_symbols.LookupTests.test_unexpected_symbol_rejected) ... ok
 test_alphanumeric_codes (test_symbols.SymbolTests.test_alphanumeric_codes) ... ok
@@ -61,6 +67,6 @@ test_unknown_sell_blocked_after_restart (test_trader.StrategyTests.test_unknown_
 test_user_stop_and_market_closed_do_not_order (test_trader.StrategyTests.test_user_stop_and_market_closed_do_not_order) ... ok
 
 ----------------------------------------------------------------------
-Ran 61 tests in 5.742s
+Ran 67 tests in 7.378s
 
 OK

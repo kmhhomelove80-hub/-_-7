@@ -48,6 +48,9 @@ class FakeBroker:
     def cash(self):
         return self.cash_value
 
+    def cash_order_limit(self, symbol, price):
+        return {'quantity':1000000,'amount':'100000000000','api':'kt00010'}
+
     def order(self, side, symbol, qty, price):
         self.orders.append((side, symbol, qty, price))
         if self.unknown_sell and side == '매도':
