@@ -7,7 +7,7 @@ python -m pip install -r requirements-build.txt
 if errorlevel 1 goto fail
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\build_windows.ps1
 if errorlevel 1 goto fail
-echo dist\KiwoomTwoStockTrader.exe 파일을 사용하세요.
+echo dist\KiwoomWebTrader.exe 파일을 사용하세요.
 pause
 exit /b 0
 :fail

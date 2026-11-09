@@ -1,10 +1,32 @@
-# 키움 A/B 순환매 · Windows 데스크톱
+# 키움 순환매 콘솔 — 로컬 웹 버전
+
+**Windows EXE를 실행하면 브라우저가 열리는 PC 로컬 웹 앱**입니다. 계좌정보와 매매 엔진은 PC에 유지하고 외부 공개 서버에 실전 거래를 올리지 않습니다.
+
+[웹 버전 실행파일 다운로드 — GitHub Releases](https://github.com/kmhhomelove80-hub/-_-7/releases)
+
+최신 Release의 `KiwoomWebTrader.exe` 또는 `KiwoomWebTrader-Windows-x64.zip`을 다운로드하세요. Python을 설치하지 않아도 됩니다. 기존 데스크톱 앱은 먼저 종료해야 하며 설정과 진단 DB를 유지합니다.
+
+- 계좌 조회 / 정상 대기 / 거래 진행 / 재시도 / 중지 상태 구분
+- 미체결 주문 상세와 앱 주문 여부 표시
+- 중지 사유·조치·해결 방법·재개 조건을 상황 카드로 안내
+- 읽기 전용 조회만 제한적으로 재시도, 주문은 재전송하지 않음
+- 재개 전 잔고·미체결·기준가·즉시 거래 가능성 점검 후 명시적 시작
+- 기존 잔고·진단·텔레그램/이메일 알림 기능 유지
+- 외부 Origin/Host 차단 및 실행별 로컬 API 토큰
+
+[웹 버전 사용설명서](웹버전_사용설명서.md)를 확인하세요. 브라우저를 닫아도 거래가 계속될 수 있습니다. 중지와 앱 종료 버튼을 사용하세요. 실전 주문·체결과 사용자 휴대폰 수신은 검증하지 않았습니다.
+
+소스 UI 데모: `python web_app.py --demo` (가상 조회 전용, 주문 없음). Windows 소스 실행: `웹실행.bat`.
+
+---
+
+## 기존 전략 상세
 
 A는 자금을 보관하는 배당 ETF, B는 상대적으로 변동이 큰 종목으로 설정합니다. **B의 직전 실제 체결가**를 기준으로 반대 방향 매매를 기다리는 프로그램입니다.
 
 [Windows 실행파일 다운로드 — GitHub Releases](https://github.com/kmhhomelove80-hub/-_-7/releases)
 
-`KiwoomTwoStockTrader.exe` 또는 `KiwoomTwoStockTrader-Windows-x64.zip`을 다운로드하세요. Windows 10/11 x64용이며 Python 설치가 필요 없습니다. 코드서명은 포함하지 않습니다.
+기존 데스크톱 배포 파일은 이전 Releases에 보존되어 있습니다. Windows 10/11 x64용이며 Python 설치가 필요 없습니다. 코드서명은 포함하지 않습니다.
 
 ## 화면 및 후속 매수 개선
 

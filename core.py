@@ -287,6 +287,23 @@ class Journal:
                 rows = db.execute('SELECT trace,at,stage,explanation,data FROM audit WHERE trace=? ORDER BY id', (trace,)).fetchall()
         return [dict(trace=r[0],at=r[1],stage=r[2],explanation=r[3],data=json.loads(r[4])) for r in rows]
 
+    def known_orders(self,account=None,day=None):
+        known=set()
+        with self.connect() as db:
+            if account is not None and day is not None:
+                rows=db.execute('SELECT detail FROM cycles WHERE account=? AND day=?',(account,day)).fetchall()
+            else:
+                rows=db.execute('SELECT detail FROM cycles').fetchall()
+        for row in rows:
+            try:
+                detail=json.loads(row[0])
+                for key in ('sell_order','buy_order'):
+                    if detail.get(key):
+                        known.add(str(detail[key]).lstrip('0'))
+            except (ValueError,TypeError):
+                continue
+        return known
+
     def audit_traces(self):
         with self.connect() as db:
             return db.execute('SELECT trace,MAX(at),COUNT(*) FROM audit GROUP BY trace ORDER BY MAX(id) DESC LIMIT 300').fetchall()
@@ -295,6 +312,18 @@ class Journal:
         with self.connect() as db:
             db.execute("UPDATE cycles SET phase='RECONCILED' WHERE id=?", (ident,))
         self.event(f'사용자가 영웅문 대조 후 미완료 사이클 {ident} 해제. 당일 횟수는 유지.')
+
+
+def pending_details(rows, known_orders=()):
+    result=[]
+    for row in rows:
+        order=str(row.get('ord_no','')).strip()
+        result.append({'order':order,'symbol':str(row.get('stk_cd','')).removeprefix('A') if len(str(row.get('stk_cd','')))==7 else str(row.get('stk_cd','')),
+            'name':str(row.get('stk_nm','')), 'side':str(row.get('io_tp_nm','')),
+            'ordered':str(row.get('ord_qty','')), 'filled':str(row.get('cntr_qty','')),
+            'remaining':str(row.get('oso_qty','')), 'price':str(row.get('ord_pric','')),
+            'time':str(row.get('tm','')), 'origin':'이 앱 주문' if order.lstrip('0') in known_orders else '외부 주문 또는 출처 확인 불가'})
+    return result
 
 
 class Engine:
@@ -317,6 +346,7 @@ class Engine:
         self.last_stage = stage
         if self.trace_id is None:
             self.trace_id = 'T' + datetime.now(KST).strftime('%Y%m%d-%H%M%S-') + uuid.uuid4().hex[:8]
+        self.emit('trade_phase', {'stage':stage,'explanation':explanation})
         record = self.journal.audit(self.trace_id, stage, explanation,
                                     dict(cycle_id=self.cycle_id, **data))
         self.emit('audit', record)
@@ -373,7 +403,11 @@ class Engine:
             else:
                 hs[rule.code] = Holding(rule.code, rule.name, 0, 0, D(0), quote, 0)
         self.last_stage = 'PENDING_ORDER_QUERY'
-        if self.broker.pending(set(r.code for r in self.config.rules)):
+        pending=self.broker.pending(set(r.code for r in self.config.rules))
+        if pending:
+            details=pending_details(pending,self.journal.known_orders(self.account,datetime.now(KST).strftime('%Y%m%d')))
+            self.emit('pending',details)
+            self.audit('PENDING_ORDERS','A/B 미체결 주문 발견: 새 주문을 차단합니다.',pending_orders=details)
             raise Halt('A/B에 미체결 주문이 있습니다. 영웅문에서 확인하세요.')
         return hs
 
@@ -516,6 +550,9 @@ class Engine:
         self.strategy(state, hs[b.code].current)
         action = signal(self.config, state, hs[b.code].current)
         if action is None:
+            self.emit('trade_wait',{'reference':state['reference'],'mode':state['mode'],
+                'current':str(hs[b.code].current),'buy_target':str(number(state['reference'])*(1-self.config.drop_percent/100)),
+                'sell_target':str(number(state['reference'])*(1+self.config.rise_percent/100))})
             if time.monotonic() - self.last_wait_audit > 30:
                 self.audit('WAITING', '정상 대기: 현재 B 가격이 허용된 방향의 목표가에 도달하지 않았습니다.',
                            state=state, current=str(hs[b.code].current), feasibility=feasibility)

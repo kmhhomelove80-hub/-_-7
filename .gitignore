@@ -10,3 +10,5 @@ settings.json
 journal.sqlite3*
 instance.lock
 smoke-test.json
+
+web-smoke-test.json
