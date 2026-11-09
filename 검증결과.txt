@@ -29,6 +29,26 @@ test_history_merges_cumulative_fills_without_double_counting (test_purchase_regr
 test_no_execution_data_is_polled_not_order_retried (test_purchase_regression.PurchaseRegressionTests.test_no_execution_data_is_polled_not_order_retried) ... ok
 test_other_errors_are_not_treated_as_empty_fills (test_purchase_regression.PurchaseRegressionTests.test_other_errors_are_not_treated_as_empty_fills) ... ok
 test_target_specific_capacity_uses_only_100_percent_fields (test_purchase_regression.PurchaseRegressionTests.test_target_specific_capacity_uses_only_100_percent_fields) ... ok
+test_malformed_schedule_fails_closed (test_scheduling.CalendarTests.test_malformed_schedule_fails_closed) ... ok
+test_real_calendar_holiday_and_year_refresh (test_scheduling.CalendarTests.test_real_calendar_holiday_and_year_refresh) ... /workspace/-_-7/.venv/lib/python3.12/site-packages/pandas/core/series.py:848: Pandas4Warning: Series.values returning an ndarray that drops timezone information for DatetimeTZDtype is deprecated. In a future version, this will return the underlying DatetimeArray instead. Use 'Series.dt.tz_convert(None).to_numpy()' to get a NumPy array of UTC values, or 'Series.array' to get the ExtensionArray.
+See https://pandas.pydata.org/docs/dev/whatsnew/v3.1.0.html#whatsnew-310-deprecations-values for more details.
+  warnings.warn(
+ok
+test_approval_requires_explicit_boolean_and_notification_channel (test_scheduling.SchedulerTests.test_approval_requires_explicit_boolean_and_notification_channel) ... ok
+test_changed_config_blocks_and_deduplicates_alert (test_scheduling.SchedulerTests.test_changed_config_blocks_and_deduplicates_alert) ... ok
+test_crash_marker_blocks_next_launch (test_scheduling.SchedulerTests.test_crash_marker_blocks_next_launch) ... ok
+test_delayed_open_uses_calendar (test_scheduling.SchedulerTests.test_delayed_open_uses_calendar) ... ok
+test_end_checks_pending_and_exits_without_selling (test_scheduling.SchedulerTests.test_end_checks_pending_and_exits_without_selling) ... ok
+test_end_query_failure_alerts_once_and_blocks (test_scheduling.SchedulerTests.test_end_query_failure_alerts_once_and_blocks) ... ok
+test_holiday_does_not_inspect_or_start (test_scheduling.SchedulerTests.test_holiday_does_not_inspect_or_start) ... ok
+test_manual_stop_pauses_today_persistently (test_scheduling.SchedulerTests.test_manual_stop_pauses_today_persistently) ... ok
+test_no_trade_notifications_by_default_but_errors_notify (test_scheduling.SchedulerTests.test_no_trade_notifications_by_default_but_errors_notify) ... ok
+test_preflight_failure_persists_and_never_restarts_next_day (test_scheduling.SchedulerTests.test_preflight_failure_persists_and_never_restarts_next_day) ... ok
+test_preopen_read_only_then_open_starts_once (test_scheduling.SchedulerTests.test_preopen_read_only_then_open_starts_once) ... ok
+test_task_failure_does_not_claim_enabled (test_scheduling.SchedulerTests.test_task_failure_does_not_claim_enabled) ... ok
+test_task_xml_is_per_user_wake_enabled_no_password (test_scheduling.SchedulerTests.test_task_xml_is_per_user_wake_enabled_no_password) ... ok
+test_user_stop_during_scheduled_inspection_cannot_start (test_scheduling.SchedulerTests.test_user_stop_during_scheduled_inspection_cannot_start) ... ok
+test_disabled_task_schema_registers_without_running (test_scheduling.WindowsRegistrationTests.test_disabled_task_schema_registers_without_running) ... skipped 'Windows only registration validation'
 test_lookup_returns_name_and_canonical_code (test_symbols.LookupTests.test_lookup_returns_name_and_canonical_code) ... ok
 test_unexpected_symbol_rejected (test_symbols.LookupTests.test_unexpected_symbol_rejected) ... ok
 test_alphanumeric_codes (test_symbols.SymbolTests.test_alphanumeric_codes) ... ok
@@ -90,6 +110,6 @@ test_static_security_headers_and_no_secret_in_html (test_web_security.LocalSecur
 test_unauthenticated_api_rejected (test_web_security.LocalSecurityTests.test_unauthenticated_api_rejected) ... ok
 
 ----------------------------------------------------------------------
-Ran 90 tests in 9.790s
+Ran 107 tests in 13.975s
 
-OK
+OK (skipped=1)

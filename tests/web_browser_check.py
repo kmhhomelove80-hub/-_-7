@@ -39,6 +39,11 @@ def main():
                 assert page.locator('#pending-body').inner_text().find('외부 주문')>=0
                 page.locator('nav [data-page="strategy"]').click()
                 assert page.locator('[name="drop"]').input_value()=='5'
+                page.locator('nav [data-page="schedule"]').click()
+                assert page.get_by_role('heading',name='예약 자동 운영',exact=True,level=2).is_visible()
+                assert not page.locator('#schedule-form button').is_enabled()
+                assert '예약 꺼짐' in page.locator('#schedule-status').inner_text()
+                page.screenshot(path='dist/schedule-preview.png',full_page=True)
                 page.locator('nav [data-page="account"]').click()
                 assert page.locator('[name="secret"]').input_value()==''
                 page.locator('nav [data-page="overview"]').click()
@@ -52,6 +57,8 @@ def main():
                 # Check the explicit preview -> confirmation -> waiting -> stop flow.
                 from test_web_runtime import WebFakeBroker
                 from web_runtime import DEFAULT_CONFIG
+                from unittest.mock import patch,MagicMock
+                from notifications import TelegramSettings
                 live_temp=tempfile.TemporaryDirectory()
                 fake_controller=Controller(live_temp.name,MemoryVault(),broker_factory=lambda *args:WebFakeBroker(),clock_factory=lambda:lambda:True)
                 fake_controller.save_credentials({'appkey':'fake-key','secret':'fake-secret','account':'1234567890'})
@@ -73,6 +80,23 @@ def main():
                     expect(page.locator('#mode-label')).to_contain_text('정상 대기',timeout=10000)
                     page.locator('#stop').click()
                     expect(page.locator('#mode-label')).to_contain_text('중지',timeout=10000)
+                    if fake_controller.trade_thread:fake_controller.trade_thread.join(3)
+                    fake_controller.telegram.configure(TelegramSettings(True,'123:'+'x'*25,'123'))
+                    page.locator('nav [data-page="schedule"]').click()
+                    page.locator('#schedule-form [name="enabled"]').check()
+                    with patch('web_runtime.WindowsTask') as task_class:
+                        task_class.return_value=MagicMock()
+                        page.locator('#schedule-form button').click()
+                        expect(page.locator('#notice')).to_contain_text('동의')
+                        assert not fake_controller.schedule['enabled']
+                        page.locator('#schedule-form [name="live_consent"]').check()
+                        page.locator('#schedule-form button').click()
+                        expect(page.locator('#schedule-status')).to_contain_text('예약 켜짐',timeout=10000)
+                        assert fake_controller.schedule['enabled']
+                        assert not fake_controller.running()
+                        assert not fake_controller.schedule['trade_notifications']
+                        task_class.return_value.configure.assert_called_once_with(True)
+
                 finally:
                     fake_controller.close();fake_server.shutdown();fake_server.server_close()
                     if fake_controller.trade_thread:fake_controller.trade_thread.join(3)

@@ -12,3 +12,5 @@ instance.lock
 smoke-test.json
 
 web-smoke-test.json
+schedule.json
+scheduled-task.xml

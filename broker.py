@@ -238,15 +238,20 @@ class MarketClock:
         self.calendar = xcals.get_calendar('XKRX', start=str(today - timedelta(days=7)),
                                           end=str(today + timedelta(days=370)))
 
-    def __call__(self):
+    def session(self, now=None):
         import pandas as pd
-        now = pd.Timestamp.now(tz='UTC')
-        label = pd.Timestamp(datetime.now(KST).date())
+        now=now or datetime.now(KST)
+        label=pd.Timestamp(now.date())
         try:
-            if not self.calendar.is_session(label):
-                return False
-            opened = self.calendar.session_open(label) + pd.Timedelta(minutes=1)
-            closed = self.calendar.session_close(label) - pd.Timedelta(minutes=10)
-            return opened <= now < closed
+            if label < self.calendar.first_session or label > self.calendar.last_session:
+                import exchange_calendars as xcals
+                self.calendar=xcals.get_calendar('XKRX',start=str(now.date()-timedelta(days=7)),end=str(now.date()+timedelta(days=370)))
+            if not self.calendar.is_session(label):return None
+            return (self.calendar.session_open(label).to_pydatetime().astimezone(KST),
+                    self.calendar.session_close(label).to_pydatetime().astimezone(KST))
         except Exception as exc:
             raise Halt('KRX 거래일 달력을 확인할 수 없습니다. 자동매매 중지') from exc
+
+    def __call__(self):
+        now=datetime.now(KST);session=self.session(now)
+        return bool(session and session[0]+timedelta(minutes=1)<=now<session[1]-timedelta(minutes=10))

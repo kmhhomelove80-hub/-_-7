@@ -14,6 +14,7 @@ from broker import Kiwoom, MarketClock
 from monitor import AccountMonitor
 from notifications import TelegramSettings, MailSettings, TelegramNotifier, EmailNotifier, private_chat_ids
 from diagnostics import trade_history
+from scheduling import load_schedule, atomic_json, WindowsTask
 
 DEFAULT_CONFIG={'a_code':'','a_name':'','b_code':'','b_name':'','drop':'5','rise':'5','a_sell':'10','b_sell':'5',
                 'cap':'1000000','daily':'10','reserve':'1','poll':'3','initial_price':'0','initial_mode':'BOTH'}
@@ -125,7 +126,7 @@ def stop_card(record,pending):
 
 
 class Controller:
-    def __init__(self,root,vault=None,demo=False,broker_factory=Kiwoom,clock_factory=MarketClock):
+    def __init__(self,root,vault=None,demo=False,broker_factory=Kiwoom,clock_factory=MarketClock,autoconnect=True):
         self.root=Path(root);self.root.mkdir(parents=True,exist_ok=True)
         self.vault=vault if vault is not None else WindowsVault()
         self.demo=demo;self.broker_factory=broker_factory;self.clock_factory=clock_factory
@@ -140,6 +141,12 @@ class Controller:
                 if int(self.config['cap'].replace(',',''))<1000000:self.config['cap']='1000000'
             except Exception:config_warning=True
         self.engine=None;self.trade_thread=None;self.preparing=False;self.active_stop=threading.Event();self.monitor_thread=None;self.monitor_stop=threading.Event()
+        self.schedule_path=self.root/'schedule.json'
+        try:self.schedule=load_schedule(self.root)
+        except Halt:
+            from scheduling import DEFAULT_SCHEDULE
+            self.schedule=dict(DEFAULT_SCHEDULE);config_warning=True
+        self.schedule_status='예약 꺼짐';self.shutdown_requested=False;self.scheduler=None;self.scheduled_stop=False
         self.monitor_generation=0;self.inspection=None;self.last_phase=''
         self.state={'mode':'IDLE','mode_label':'중지 · 시작 전 점검 필요','query':'미연결','balance':None,
             'pending':[],'stop_card':None,'logs':[],'audit':None,'strategy':'기준가 확인 전',
@@ -154,7 +161,7 @@ class Controller:
         if demo:self.seed_demo()
         else:
             try:
-                if self.vault.get('credentials'):self.connect()
+                if autoconnect and self.vault.get('credentials'):self.connect()
             except Exception:self.log('계좌 보안 저장소를 읽지 못했습니다. 연결 설정을 확인하세요.')
     def log(self,text):
         with self.lock:
@@ -178,8 +185,13 @@ class Controller:
         with self.lock:
             if event=='log':self.log(payload)
             elif event=='balance':
-                self.state['balance']=payload;self.state['query']='연결됨'
-            elif event=='balance_error':self.state['query']='조회 실패 · 이전 값';self.log(payload)
+                self.balance_failures=0;self.state['balance']=payload;self.state['query']='연결됨'
+            elif event=='balance_error':
+                self.state['query']='조회 실패 · 이전 값';self.log(payload)
+                self.balance_failures=getattr(self,'balance_failures',0)+1
+                if self.balance_failures>=3 and self.schedule['enabled'] and self.running():
+                    self.active_stop.set()
+                    self.schedule_issue('계좌 조회가 3회 연속 실패했습니다. 새 주문을 보류했습니다. API 연결을 확인하고 다시 승인하세요.')
             elif event=='pending':self.state['pending']=payload
             elif event=='strategy':self.state['strategy']=payload
             elif event=='feasibility':self.state['feasibility']=payload
@@ -201,19 +213,33 @@ class Controller:
                 if payload['stage']=='HALTED':
                     card=stop_card(payload,self.state['pending'])
                     self.state.update(mode='HALTED',mode_label=card['title'],stop_card=card)
+                    if self.schedule['enabled']:
+                        normal=('시간 밖' in payload['explanation'] or '실행 횟수' in payload['explanation'] or self.scheduled_stop) and not self.journal.active()
+                        if normal:
+                            self.schedule['paused_day']=datetime.now(KST).strftime('%Y%m%d');self.persist_schedule()
+                            self.state.update(mode='SESSION_ENDED',mode_label='정상 종료 · '+payload['explanation'],stop_card=None)
+                        else:self.schedule_issue(card['reason'],notify=False)
                 if payload['stage']=='PENDING_ORDERS':self.state['pending']=payload['data']['pending_orders']
             elif event=='notice':
+                title=payload['subject']
+                if '중지 / 확인 필요' in title:
+                    if not self.schedule.get('blocked') and (self.scheduled_stop or '시간 밖' in payload['body'] or '실행 횟수' in payload['body']) and not self.journal.active():return
+                    if self.schedule['enabled']:
+                        self.schedule['alert_key']=self.schedule['blocked'];self.persist_schedule()
+                elif any(t in title for t in ('자동매매 시작','자동매매 종료','순환매 신호 발생','순환매 완료',' 체결 ')) and not self.schedule['trade_notifications']:return
                 body=payload['body']
                 if '중지 / 확인 필요' in payload['subject'] and self.state['stop_card']:
                     card=self.state['stop_card']
                     body+='\n대응 방법: '+ ' / '.join(card['remedies'])+'\n재개 조건: '+card['resume']
                 self.telegram.notify(payload['subject'],body);self.email.notify(payload['subject'],body)
             elif event=='stopped':
-                if self.state['mode'] not in ('HALTED','USER_STOPPED'):
+                if self.state['mode'] not in ('HALTED','USER_STOPPED','BLOCKED','SESSION_ENDED'):
                     self.state.update(mode='IDLE',mode_label='중지 · 재개 전 점검 필요')
     def snapshot(self):
         with self.lock:
             state=copy.deepcopy(self.state)
+        state['schedule']={k:self.schedule[k] for k in ('enabled','trade_notifications','blocked','paused_day','attempt_day','finished_day')}
+        state['schedule']['status']=self.schedule_status
         state['config']=copy.deepcopy(self.config)
         state['demo']=self.demo;state['running']=self.running()
         try:
@@ -268,7 +294,7 @@ class Controller:
         with self.lock:self.state['query']='연결 해제 · 이전 값'
     def fingerprint(self):
         return hashlib.sha256(json.dumps({'config':self.config,'credentials':self.credentials()},sort_keys=True).encode()).hexdigest()
-    def inspect(self):
+    def inspect(self,allow_closed=False):
         self.mutation_allowed()
         if self.running():raise Halt('실행 중에는 재개 점검을 할 수 없습니다.')
         cfg=parse_config(self.config);broker,account=self.broker()
@@ -293,7 +319,7 @@ class Controller:
             if active:blockers.append('미완료 기록이 있습니다. 영웅문 대조 후 별도로 해제하세요.')
             if total>cfg.cap:blockers.append('합산 매입원금 한도 초과')
             if used>=cfg.daily_max:blockers.append('일일 최대 횟수 도달')
-            if not market_open:blockers.append('허용 거래시간 밖')
+            if not market_open and not allow_closed:blockers.append('허용 거래시간 밖')
             immediate='현재 가격에서 즉시 발생하는 신호 없음'
             if action:
                 source=hs[cfg.rules[0 if action=='BUY' else 1].code];target=hs[cfg.rules[1 if action=='BUY' else 0].code]
@@ -325,13 +351,17 @@ class Controller:
         if not item or item['result']['id']!=identifier or time.monotonic()-item['created']>30 or item['fingerprint']!=self.fingerprint():
             raise Halt('점검이 만료됐거나 설정이 변경됐습니다. 재개 전 점검을 다시 실행하세요.')
         return item
-    def start(self,data):
+    def start(self,data,scheduled=False):
         self.mutation_allowed()
         with self.lock:
             if self.running():raise Halt('이미 실행/준비 중입니다.')
+            if scheduled and (not self.schedule['enabled'] or self.schedule['blocked'] or self.schedule['paused_day']==datetime.now(KST).strftime('%Y%m%d') or self.schedule['consent']!=self.fingerprint()):raise Halt('예약 중지 또는 승인 상태 변경으로 자동 시작을 취소했습니다.')
             item=self.require_inspection(data.get('inspection_id'))
             if data.get('live_confirmed') is not True or data.get('preview_confirmed') is not True:raise Halt('실전 주문 및 점검 내용을 확인해야 합니다.')
             if not item['result']['can_start']:raise Halt('재개 점검의 차단 사유를 먼저 해결하세요.')
+            if not scheduled and self.schedule['enabled']:
+                self.schedule['paused_day']=datetime.now(KST).strftime('%Y%m%d');self.persist_schedule()
+            self.scheduled_stop=False
             self.inspection=None;self.preparing=True
             stop=self.active_stop=threading.Event()
             self.state.update(mode='CONNECTING',mode_label='연결 중 · 주문 전 재확인',stop_card=None,pending=[])
@@ -356,14 +386,20 @@ class Controller:
             raise Halt(reason) from None
         finally:
             with self.lock:self.preparing=False
-    def stop(self):
+    def stop(self,scheduled=False):
+        self.scheduled_stop=scheduled
+        if not scheduled and self.schedule['enabled']:
+            self.schedule['paused_day']=datetime.now(KST).strftime('%Y%m%d');self.persist_schedule()
         with self.lock:self.active_stop.set();self.inspection=None
-        if self.engine:self.engine.stop.set()
+        if self.engine:self.engine.request_stop()
         self.inspection=None
         card=stop_card({'trace':getattr(self.engine,'trace_id',None),'explanation':'사용자가 중지 요청했습니다. 접수된 주문을 취소한 것은 아닙니다.',
             'data':{'orders':getattr(self.engine,'order_statuses',{})}},self.state['pending'])
-        with self.lock:self.state.update(mode='USER_STOPPED',mode_label='사용자 중지 요청 · 접수 주문은 취소하지 않음',stop_card=card)
-        self.log('사용자 중지 요청. 접수/전송 중인 주문은 영웅문에서 확인하세요.')
+        with self.lock:
+            if scheduled and not self.journal.active():
+                self.state.update(mode='SESSION_ENDED',mode_label='정상 종료 · 신규 주문 차단',stop_card=None)
+            else:self.state.update(mode='USER_STOPPED',mode_label='사용자 중지 요청 · 접수 주문은 취소하지 않음',stop_card=card)
+        self.log('예약 종료 요청. 신규 주문 차단, 기존 주문 취소 없음.' if scheduled else '사용자 중지 요청. 접수/전송 중인 주문은 영웅문에서 확인하세요.')
     def reconcile(self,data):
         self.mutation_allowed()
         if self.running():raise Halt('자동매매를 먼저 중지하세요.')
@@ -417,5 +453,56 @@ class Controller:
         record={'trace':'DEMO-TRACE','explanation':'A/B에 미체결 주문이 있습니다. 영웅문에서 확인하세요.','data':{'orders':{'SELL':'NOT_SENT','BUY':'NOT_SENT'}}}
         self.state['stop_card']=stop_card(record,self.state['pending'])
         self.log('데모 화면입니다. 실제 API 연결·주문·알림은 실행하지 않습니다.')
+    def persist_schedule(self):
+        with self.lock:atomic_json(self.schedule_path,self.schedule)
+    def schedule_issue(self,reason,notify=True):
+        with self.lock:
+            changed=self.schedule['blocked']!=reason
+            self.schedule['blocked']=reason;self.schedule_status='확인 필요 · 자동 시작 차단'
+            if changed:
+                record=self.journal.audit('SCHEDULE-'+datetime.now(KST).strftime('%Y%m%d-%H%M%S'),'SCHEDULE_BLOCKED',reason,
+                    {'actions':['새 주문 차단','자동 취소·재전송 없음'],'resume':'영웅문 대조 후 예약 재승인 필요'})
+                self.state['audit']=record
+            self.persist_schedule()
+            self.log(reason)
+            card=stop_card({'explanation':reason,'data':{}},self.state['pending'])
+            card['resume']='영웅문 대조와 문제 해결 후 예약 설정에서 다시 승인하세요. 자동 복구 주문은 없습니다.'
+            self.state.update(stop_card=card,mode='BLOCKED',mode_label='예약 운영 확인 필요')
+            if notify and self.schedule['alert_key']!=reason:
+                self.schedule['alert_key']=reason;self.persist_schedule()
+                body=reason+'\n조치: 자동 시작 차단. 주문 취소·재전송 없음.\n대응: 영웅문 주문·체결·잔고 대조 및 연결 확인 후 예약 설정에서 다시 승인하세요.'
+                self.telegram.notify('예약 자동매매 확인 필요',body);self.email.notify('예약 자동매매 확인 필요',body)
+    def configure_schedule(self,data,task=None):
+        self.mutation_allowed()
+        if self.running():raise Halt('자동매매를 먼저 중지하세요.')
+        if not isinstance(data.get('enabled'),bool) or not isinstance(data.get('trade_notifications',False),bool):raise Halt('예약 사용 값은 참/거짓이어야 합니다.')
+        enabled=data['enabled']
+        if enabled:
+            if data.get('live_consent') is not True:raise Halt('매 거래일 자동 실전 주문 실행에 동의해야 합니다.')
+            parse_config(self.config);fingerprint=self.fingerprint()
+            if self.journal.active():raise Halt('미완료 기록을 영웅문과 대조하고 처리한 후 예약을 승인하세요.')
+            if not self.telegram.settings.enabled and not self.email.settings.enabled:raise Halt('예외 알림을 받을 텔레그램 또는 이메일을 먼저 설정하세요.')
+            if self.telegram.settings.enabled:self.telegram.settings.validate()
+            if self.email.settings.enabled:self.email.settings.validate()
+        (task or WindowsTask(self.root)).configure(enabled)
+        with self.lock:
+            self.schedule.update(enabled=enabled,trade_notifications=data.get('trade_notifications',False))
+            if enabled:
+                self.schedule.update(consent=fingerprint,blocked='',paused_day='',attempt_day='',preflight_day='',finished_day='',alert_key='',process_open=bool(self.scheduler))
+            self.persist_schedule();self.inspection=None
+            self.schedule_status='예약 승인됨 · 거래일·계좌 점검 대기' if enabled else '예약 꺼짐'
+            if enabled:self.state.update(mode='SCHEDULED_WAIT',mode_label='예약 승인됨 · 거래일 점검 대기',stop_card=None)
+        self.log('Windows 예약 작업 '+('등록 및 자동 실전 거래 승인 완료' if enabled else '해제 완료'))
+    def begin_scheduler(self,calendar,auto_exit=False):
+        from scheduling import SessionScheduler
+        self.scheduler=SessionScheduler(self,calendar,auto_exit=auto_exit)
+        if self.schedule['enabled']:
+            crashed=self.schedule['process_open']
+            self.schedule['process_open']=True;self.persist_schedule()
+            if crashed:self.schedule_issue('이전 프로그램이 정상 종료되지 않았습니다. 영웅문에서 주문·체결을 확인한 후 예약을 다시 승인하세요.')
+        self.scheduler.launch()
     def close(self):
-        self.stop();self.disconnect();self.telegram.close();self.email.close()
+        if self.scheduler:self.scheduler.stop.set()
+        self.stop(scheduled=True);self.disconnect();self.telegram.close();self.email.close()
+        if self.scheduler:
+            self.schedule['process_open']=False;self.persist_schedule()

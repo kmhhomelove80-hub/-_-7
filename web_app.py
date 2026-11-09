@@ -69,10 +69,12 @@ class Handler(BaseHTTPRequestHandler):
             if route=='/api/shutdown':
                 if c.running():raise Halt('자동매매를 먼저 중지하고 접수 주문을 확인하세요.')
                 if c.telegram.pending or c.email.pending:raise Halt('알림 발송이 끝난 후 종료하세요.')
+                c.stop()
                 self.reply(200,{'ok':True});threading.Thread(target=self.server.shutdown,daemon=True).start();return
             with c.operation:
                 if route=='/api/credentials':c.save_credentials(data);result=None
                 elif route=='/api/config':c.save_config(data);result=None
+                elif route=='/api/schedule':c.configure_schedule(data);result=None
                 elif route=='/api/connect':c.connect();result=None
                 elif route=='/api/disconnect':c.disconnect();result=None
                 elif route=='/api/lookup':result=c.lookup(data)
@@ -122,10 +124,19 @@ def smoke_test():
 
 
 def main():
-    parser=argparse.ArgumentParser();parser.add_argument('--demo',action='store_true');parser.add_argument('--no-browser',action='store_true');parser.add_argument('--port',type=int,default=0);parser.add_argument('--smoke-test',action='store_true')
+    parser=argparse.ArgumentParser();parser.add_argument('--demo',action='store_true');parser.add_argument('--no-browser',action='store_true');parser.add_argument('--port',type=int,default=0);parser.add_argument('--smoke-test',action='store_true');parser.add_argument('--scheduled',action='store_true')
     args=parser.parse_args()
     if args.smoke_test:smoke_test();return
-    lock=None;temp=None
+    lock=None;temp=None;calendar=None
+    if args.scheduled:
+        if args.demo:raise Halt('데모는 예약 실전 실행을 지원하지 않습니다.')
+        from scheduling import load_schedule
+        from broker import MarketClock
+        from datetime import timedelta
+        root=data_directory();schedule=load_schedule(root)
+        if not schedule['enabled'] or schedule['paused_day']==datetime.now(KST).strftime('%Y%m%d'):return
+        if not 8<=datetime.now(KST).hour<20:return
+
     if args.demo:
         temp=tempfile.TemporaryDirectory();root=Path(temp.name);vault=MemoryVault()
     else:
@@ -137,6 +148,7 @@ def main():
         lock.seek(0)
         try:msvcrt.locking(lock.fileno(),msvcrt.LK_NBLCK,1)
         except OSError:
+            if args.scheduled:lock.close();return
             from web_runtime import WindowsVault
             import urllib.request
             session=WindowsVault().get('web_session')
@@ -151,11 +163,41 @@ def main():
                 lock.close()
                 return
             except Exception:raise Halt('기존 데스크톱/웹 프로그램이 실행 중입니다. 기존 창에서 중지·종료하세요.') from None
-    controller=Controller(root,vault,args.demo);server=LocalServer(controller,args.port)
+    calendar_error=False
+    if args.scheduled:
+        try:
+            calendar=MarketClock();now=datetime.now(KST);session=calendar.session(now)
+            if session is None or now>=session[1]+timedelta(minutes=10):
+                if lock:lock.close()
+                return
+        except Exception:calendar_error=True
+    controller=Controller(root,vault,args.demo,autoconnect=not args.scheduled);server=LocalServer(controller,args.port)
+    if calendar_error:
+        controller.schedule_issue('거래일 달력 초기화 실패. 새 주문을 차단했습니다. 프로그램 버전과 달력을 확인한 뒤 다시 승인하세요.')
+        def finish_error():
+            for _ in range(120):
+                if not controller.telegram.pending and not controller.email.pending:break
+                time.sleep(1)
+            controller.shutdown_requested=True
+        threading.Thread(target=finish_error,daemon=True).start()
+
     if not args.demo:controller.vault.set('web_session',{'port':server.server_port,'token':server.local_token,'pid':os.getpid()})
     url=server.origin+'/#token='+server.local_token
-    if args.no_browser:print('LOCAL_WEB_READY '+url,flush=True)
+    if not args.demo and not calendar_error:
+        try:
+            from broker import MarketClock
+            if args.scheduled and session and now>session[0]+timedelta(minutes=6) and not controller.schedule['blocked'] and controller.schedule['attempt_day']!=now.strftime('%Y%m%d'):
+                controller.schedule_issue('예정 자동 시작보다 5분 이상 늦게 실행됐습니다. PC 전원·로그인·절전을 확인하고 예약을 다시 승인하세요.')
+            controller.begin_scheduler(calendar or MarketClock(),auto_exit=True)
+        except Exception as exc:controller.schedule_issue('거래일 달력 초기화 실패. 예약을 중단했습니다. 달력과 프로그램 버전을 확인하세요.')
+    if args.no_browser or args.scheduled:
+        if not getattr(sys,'frozen',False):print('LOCAL_WEB_READY '+url,flush=True)
     else:webbrowser.open(url)
+    def auto_shutdown():
+        while not controller.shutdown_requested:
+            time.sleep(1)
+        server.shutdown()
+    threading.Thread(target=auto_shutdown,daemon=True).start()
     try:server.serve_forever(poll_interval=.2)
     finally:
         controller.close();server.server_close()
