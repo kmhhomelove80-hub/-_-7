@@ -211,19 +211,26 @@ class Controller:
             elif event=='audit':
                 self.state['audit']=payload
                 if payload['stage']=='HALTED':
+                    prior_card=self.state['stop_card']
                     card=stop_card(payload,self.state['pending'])
                     self.state.update(mode='HALTED',mode_label=card['title'],stop_card=card)
                     if self.schedule['enabled']:
-                        normal=('시간 밖' in payload['explanation'] or '실행 횟수' in payload['explanation'] or self.scheduled_stop) and not self.journal.active()
+                        user_cancel='사용자 중지' in payload['explanation']
+                        normal=(('시간 밖' in payload['explanation'] or '실행 횟수' in payload['explanation'] or self.scheduled_stop or
+                                 user_cancel and self.schedule['paused_day']==datetime.now(KST).strftime('%Y%m%d')) and
+                                not self.journal.active() and not self.schedule['blocked'])
                         if normal:
                             self.schedule['paused_day']=datetime.now(KST).strftime('%Y%m%d');self.persist_schedule()
                             self.state.update(mode='SESSION_ENDED',mode_label='정상 종료 · '+payload['explanation'],stop_card=None)
+                        elif user_cancel and self.schedule['blocked']:
+                            self.state.update(mode='BLOCKED',mode_label='예약 운영 확인 필요',stop_card=prior_card or card)
                         else:self.schedule_issue(card['reason'],notify=False)
                 if payload['stage']=='PENDING_ORDERS':self.state['pending']=payload['data']['pending_orders']
             elif event=='notice':
                 title=payload['subject']
                 if '중지 / 확인 필요' in title:
-                    if not self.schedule.get('blocked') and (self.scheduled_stop or '시간 밖' in payload['body'] or '실행 횟수' in payload['body']) and not self.journal.active():return
+                    if self.schedule['blocked'] and self.schedule['alert_key']==self.schedule['blocked'] and '사용자 중지' in payload['body']:return
+                    if not self.schedule.get('blocked') and (self.scheduled_stop or '시간 밖' in payload['body'] or '실행 횟수' in payload['body'] or '사용자 중지' in payload['body'] and self.schedule['paused_day']==datetime.now(KST).strftime('%Y%m%d')) and not self.journal.active():return
                     if self.schedule['enabled']:
                         self.schedule['alert_key']=self.schedule['blocked'];self.persist_schedule()
                 elif any(t in title for t in ('자동매매 시작','자동매매 종료','순환매 신호 발생','순환매 완료',' 체결 ')) and not self.schedule['trade_notifications']:return

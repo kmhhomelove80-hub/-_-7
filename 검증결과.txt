@@ -41,6 +41,7 @@ test_delayed_open_uses_calendar (test_scheduling.SchedulerTests.test_delayed_ope
 test_end_checks_pending_and_exits_without_selling (test_scheduling.SchedulerTests.test_end_checks_pending_and_exits_without_selling) ... ok
 test_end_pending_blocks_without_automatic_cancel (test_scheduling.SchedulerTests.test_end_pending_blocks_without_automatic_cancel) ... ok
 test_end_query_failure_alerts_once_and_blocks (test_scheduling.SchedulerTests.test_end_query_failure_alerts_once_and_blocks) ... ok
+test_engine_stop_preserves_original_failure_reason_without_duplicate_alert (test_scheduling.SchedulerTests.test_engine_stop_preserves_original_failure_reason_without_duplicate_alert) ... ok
 test_holiday_does_not_inspect_or_start (test_scheduling.SchedulerTests.test_holiday_does_not_inspect_or_start) ... ok
 test_manual_stop_pauses_today_persistently (test_scheduling.SchedulerTests.test_manual_stop_pauses_today_persistently) ... ok
 test_no_trade_notifications_by_default_but_errors_notify (test_scheduling.SchedulerTests.test_no_trade_notifications_by_default_but_errors_notify) ... ok
@@ -48,6 +49,7 @@ test_normal_daily_limit_preserves_normal_end_state (test_scheduling.SchedulerTes
 test_preflight_failure_persists_and_never_restarts_next_day (test_scheduling.SchedulerTests.test_preflight_failure_persists_and_never_restarts_next_day) ... ok
 test_preopen_read_only_then_open_starts_once (test_scheduling.SchedulerTests.test_preopen_read_only_then_open_starts_once) ... ok
 test_schedule_failure_signals_running_engine_to_stop (test_scheduling.SchedulerTests.test_schedule_failure_signals_running_engine_to_stop) ... ok
+test_stop_during_cycle_is_daily_pause_not_permanent_error (test_scheduling.SchedulerTests.test_stop_during_cycle_is_daily_pause_not_permanent_error) ... ok
 test_task_failure_does_not_claim_enabled (test_scheduling.SchedulerTests.test_task_failure_does_not_claim_enabled) ... ok
 test_task_xml_is_per_user_wake_enabled_no_password (test_scheduling.SchedulerTests.test_task_xml_is_per_user_wake_enabled_no_password) ... ok
 test_user_stop_during_scheduled_inspection_cannot_start (test_scheduling.SchedulerTests.test_user_stop_during_scheduled_inspection_cannot_start) ... ok
@@ -113,6 +115,6 @@ test_static_security_headers_and_no_secret_in_html (test_web_security.LocalSecur
 test_unauthenticated_api_rejected (test_web_security.LocalSecurityTests.test_unauthenticated_api_rejected) ... ok
 
 ----------------------------------------------------------------------
-Ran 110 tests in 14.702s
+Ran 112 tests in 14.953s
 
 OK (skipped=1)

@@ -102,6 +102,20 @@ class SchedulerTests(unittest.TestCase):
         self.assertIn('미체결',self.c.schedule['blocked'])
         self.assertEqual(self.c.state['pending'][0]['remaining'],'1')
         self.assertFalse(broker.orders);self.c.telegram.notify.assert_called_once()
+    def test_stop_during_cycle_is_daily_pause_not_permanent_error(self):
+        self.c.stop()
+        self.c.event('audit',{'stage':'HALTED','explanation':'사용자 중지. 진행 주문은 영웅문에서 확인하세요.','data':{},'trace':'test'})
+        self.c.event('notice',{'subject':'자동매매 중지 / 확인 필요','body':'사용자 중지. 진행 주문은 영웅문에서 확인하세요.'})
+        self.assertFalse(self.c.schedule['blocked'])
+        self.assertEqual(self.c.state['mode'],'SESSION_ENDED');self.c.telegram.notify.assert_not_called()
+    def test_engine_stop_preserves_original_failure_reason_without_duplicate_alert(self):
+        reason='계좌 조회가 3회 연속 실패했습니다.'
+        self.c.schedule_issue(reason)
+        self.c.event('audit',{'stage':'HALTED','explanation':'사용자 중지. 진행 주문은 영웅문에서 확인하세요.','data':{},'trace':'test'})
+        self.c.event('notice',{'subject':'자동매매 중지 / 확인 필요','body':'사용자 중지. 진행 주문은 영웅문에서 확인하세요.'})
+        self.assertEqual(self.c.schedule['blocked'],reason)
+        self.assertEqual(self.c.state['stop_card']['reason'],reason)
+        self.c.telegram.notify.assert_called_once()
     def test_task_failure_does_not_claim_enabled(self):
         self.c.schedule['enabled']=False;self.task.configure.side_effect=Halt('권한 오류')
         with self.assertRaises(Halt):self.c.configure_schedule({'enabled':True,'live_consent':True},self.task)
