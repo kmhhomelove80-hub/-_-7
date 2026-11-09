@@ -55,6 +55,24 @@ class ControllerTests(unittest.TestCase):
         self.c.inspection['created']-=31
         with self.assertRaises(Halt):self.c.start({'inspection_id':result['id'],'live_confirmed':True,'preview_confirmed':True})
         self.assertFalse(self.c.running())
+    def test_stop_during_start_preparation_prevents_trading(self):
+        result=self.c.inspect()
+        entered=threading.Event();release=threading.Event()
+        def slow_clock():
+            entered.set();release.wait(3);return lambda:True
+        self.c.clock_factory=slow_clock
+        errors=[]
+        def start():
+            try:self.c.start({'inspection_id':result['id'],'live_confirmed':True,'preview_confirmed':True})
+            except Exception as exc:errors.append(exc)
+        thread=threading.Thread(target=start);thread.start()
+        self.assertTrue(entered.wait(2))
+        self.c.stop();release.set();thread.join(3)
+        self.assertFalse(errors)
+        self.assertFalse(self.c.running())
+        self.assertTrue(self.c.engine.stop.is_set())
+        self.assertTrue(all(not b.orders for b in self.brokers))
+
     def test_configuration_change_invalidates_preview(self):
         result=self.c.inspect();self.c.save_config(dict(self.c.config,drop='3'))
         with self.assertRaises(Halt):self.c.require_inspection(result['id'])

@@ -72,6 +72,7 @@ test_incomplete_reconciliation_is_separate_and_never_places_orders (test_web_run
 test_inspection_is_read_only_and_no_implicit_state_reset (test_web_runtime.ControllerTests.test_inspection_is_read_only_and_no_implicit_state_reset) ... ok
 test_snapshot_never_returns_credentials (test_web_runtime.ControllerTests.test_snapshot_never_returns_credentials) ... ok
 test_start_requires_fresh_preview_and_both_confirmations (test_web_runtime.ControllerTests.test_start_requires_fresh_preview_and_both_confirmations) ... ok
+test_stop_during_start_preparation_prevents_trading (test_web_runtime.ControllerTests.test_stop_during_start_preparation_prevents_trading) ... ok
 test_pending_details_strip_account_and_identify_origin (test_web_runtime.PendingCardTests.test_pending_details_strip_account_and_identify_origin) ... ok
 test_stop_card_distinguishes_order_unknown_from_query_failure (test_web_runtime.PendingCardTests.test_stop_card_distinguishes_order_unknown_from_query_failure) ... ok
 test_unknown_order_origin_is_not_assumed_to_be_manual (test_web_runtime.PendingCardTests.test_unknown_order_origin_is_not_assumed_to_be_manual) ... ok
@@ -89,6 +90,6 @@ test_static_security_headers_and_no_secret_in_html (test_web_security.LocalSecur
 test_unauthenticated_api_rejected (test_web_security.LocalSecurityTests.test_unauthenticated_api_rejected) ... ok
 
 ----------------------------------------------------------------------
-Ran 89 tests in 9.612s
+Ran 90 tests in 9.790s
 
 OK

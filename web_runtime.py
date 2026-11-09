@@ -139,7 +139,7 @@ class Controller:
                 self.config.update({k:str(v) for k,v in old.items() if k in DEFAULT_CONFIG})
                 if int(self.config['cap'].replace(',',''))<1000000:self.config['cap']='1000000'
             except Exception:config_warning=True
-        self.engine=None;self.trade_thread=None;self.monitor_thread=None;self.monitor_stop=threading.Event()
+        self.engine=None;self.trade_thread=None;self.preparing=False;self.active_stop=threading.Event();self.monitor_thread=None;self.monitor_stop=threading.Event()
         self.monitor_generation=0;self.inspection=None;self.last_phase=''
         self.state={'mode':'IDLE','mode_label':'중지 · 시작 전 점검 필요','query':'미연결','balance':None,
             'pending':[],'stop_card':None,'logs':[],'audit':None,'strategy':'기준가 확인 전',
@@ -163,7 +163,7 @@ class Controller:
     def notice_status(self,channel,message):
         with self.lock:self.state['notification'][channel]={'at':datetime.now(KST).isoformat(),'message':message,'success':'완료' in message}
         self.log(message)
-    def running(self):return bool(self.trade_thread and self.trade_thread.is_alive())
+    def running(self):return bool(self.preparing or (self.trade_thread and self.trade_thread.is_alive()))
     def credentials(self):
         result=self.vault.get('credentials')
         if not result or not result.get('appkey') or not result.get('secret'):
@@ -203,7 +203,11 @@ class Controller:
                     self.state.update(mode='HALTED',mode_label=card['title'],stop_card=card)
                 if payload['stage']=='PENDING_ORDERS':self.state['pending']=payload['data']['pending_orders']
             elif event=='notice':
-                self.telegram.notify(payload['subject'],payload['body']);self.email.notify(payload['subject'],payload['body'])
+                body=payload['body']
+                if '중지 / 확인 필요' in payload['subject'] and self.state['stop_card']:
+                    card=self.state['stop_card']
+                    body+='\n대응 방법: '+ ' / '.join(card['remedies'])+'\n재개 조건: '+card['resume']
+                self.telegram.notify(payload['subject'],body);self.email.notify(payload['subject'],body)
             elif event=='stopped':
                 if self.state['mode'] not in ('HALTED','USER_STOPPED'):
                     self.state.update(mode='IDLE',mode_label='중지 · 재개 전 점검 필요')
@@ -323,27 +327,37 @@ class Controller:
         return item
     def start(self,data):
         self.mutation_allowed()
-        if self.running():raise Halt('이미 실행 중입니다.')
-        item=self.require_inspection(data.get('inspection_id'))
-        if data.get('live_confirmed') is not True or data.get('preview_confirmed') is not True:raise Halt('실전 주문 및 점검 내용을 확인해야 합니다.')
-        if not item['result']['can_start']:raise Halt('재개 점검의 차단 사유를 먼저 해결하세요.')
-        self.inspection=None
-        if not self.monitor_thread or not self.monitor_thread.is_alive():self.connect()
-        self.state.update(mode='CONNECTING',mode_label='연결 중 · 주문 전 재확인',stop_card=None,pending=[])
-        stop=threading.Event()
+        with self.lock:
+            if self.running():raise Halt('이미 실행/준비 중입니다.')
+            item=self.require_inspection(data.get('inspection_id'))
+            if data.get('live_confirmed') is not True or data.get('preview_confirmed') is not True:raise Halt('실전 주문 및 점검 내용을 확인해야 합니다.')
+            if not item['result']['can_start']:raise Halt('재개 점검의 차단 사유를 먼저 해결하세요.')
+            self.inspection=None;self.preparing=True
+            stop=self.active_stop=threading.Event()
+            self.state.update(mode='CONNECTING',mode_label='연결 중 · 주문 전 재확인',stop_card=None,pending=[])
         try:
-            self.engine=Engine(self.broker('trade',stop)[0],parse_config(self.config),self.journal,item['account'],self.clock_factory(),self.event,stop)
+            if not self.monitor_thread or not self.monitor_thread.is_alive():self.connect()
+            engine=Engine(self.broker('trade',stop)[0],parse_config(self.config),self.journal,item['account'],self.clock_factory(),self.event,stop)
+            self.engine=engine
+            def run():
+                try:engine.run()
+                finally:engine.broker.session.close()
+            with self.lock:
+                if stop.is_set():
+                    engine.broker.session.close()
+                    self.state.update(mode='USER_STOPPED',mode_label='사용자 중지 · 시작 준비 취소')
+                    return
+                self.trade_thread=threading.Thread(target=run,daemon=True)
+                self.trade_thread.start()
         except Exception as exc:
             reason=str(exc) if isinstance(exc,Halt) else f'실행 준비 오류({type(exc).__name__})'
             record=self.journal.audit('START-'+secrets.token_hex(6),'HALTED',reason,{'orders':{'SELL':'NOT_SENT','BUY':'NOT_SENT'},'order_outcome':'NOT_SENT'})
-            self.event('audit',record)
-            self.event('notice',{'subject':'자동매매 시작 실패','body':reason})
+            self.event('audit',record);self.event('notice',{'subject':'자동매매 시작 실패','body':reason})
             raise Halt(reason) from None
-        def run():
-            try:self.engine.run()
-            finally:self.engine.broker.session.close()
-        self.trade_thread=threading.Thread(target=run,daemon=True);self.trade_thread.start()
+        finally:
+            with self.lock:self.preparing=False
     def stop(self):
+        with self.lock:self.active_stop.set();self.inspection=None
         if self.engine:self.engine.stop.set()
         self.inspection=None
         card=stop_card({'trace':getattr(self.engine,'trace_id',None),'explanation':'사용자가 중지 요청했습니다. 접수된 주문을 취소한 것은 아닙니다.',
