@@ -43,7 +43,7 @@ class Kiwoom:
         is_order = api_id in ('kt10000','kt10001')
         if is_order and self.audit_callback:
             self.audit_callback('ORDER_TRANSMIT_ATTEMPT', {'api':api_id, 'symbol':body['stk_cd'],
-                'qty':body['ord_qty'], 'price':body['ord_uv'], 'order_type':'보통 지정가'})
+                'qty':body['ord_qty'], 'price':body['ord_uv'], 'order_type':'시장가'})
         try:
             response = self.session.post(BASE + path, json=body, headers=headers,
                                          timeout=(5, 15), allow_redirects=False)
@@ -169,7 +169,7 @@ class Kiwoom:
         value = abs(number(data['cur_prc']))
         if value <= 0 or value != value.to_integral_value():
             raise Halt('현재가 오류')
-        self.quote_snapshots[symbol] = {'price':str(value),'received_at':datetime.now(KST).isoformat()}
+        self.quote_snapshots[symbol] = {'price':str(value),'upper_limit':str(abs(number(data['upl_pric']))) if data.get('upl_pric') else None,'received_at':datetime.now(KST).isoformat()}
         return {'code': symbol, 'name': str(data['stk_nm']).strip(), 'current': value}
 
     def quote(self, symbol, expected_name):
@@ -177,6 +177,12 @@ class Kiwoom:
         if info['name'] != expected_name.strip():
             raise Halt('시세 종목코드/종목명이 설정과 일치하지 않습니다.')
         return info['current']
+
+    def market_buy_bound(self,symbol,price):
+        snapshot=self.quote_snapshots.get(symbol,{})
+        upper=number(snapshot.get('upper_limit') or '0')
+        if upper<price or upper<=0:raise Halt('시장가 매수 예산 계산용 상한가를 확인할 수 없습니다. 주문 미전송')
+        return upper
 
     def cash(self):
         data = self.request('kt00001', {'qry_tp': '3'})
@@ -208,8 +214,8 @@ class Kiwoom:
             raise Halt('주문 인자 오류')
         api = 'kt10000' if side == '매수' else 'kt10001'
         data = self.request(api, {'dmst_stex_tp': 'KRX', 'stk_cd': code(symbol),
-                                 'ord_qty': str(qty), 'ord_uv': str(int(price)),
-                                 'trde_tp': '0', 'cond_uv': ''}, '/api/dostk/ordr')
+                                 'ord_qty': str(qty), 'ord_uv': '',
+                                 'trde_tp': '3', 'cond_uv': ''}, '/api/dostk/ordr')
         order = str(data.get('ord_no', '')).strip()
         if not order.isdigit() or int(order) <= 0:
             raise ApiFailure('정상 응답이지만 유효한 주문번호가 없습니다. 실제 접수 여부 확인 필요', 'UNKNOWN', api)

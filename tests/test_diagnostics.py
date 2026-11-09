@@ -31,16 +31,16 @@ class DiagnosticsTests(unittest.TestCase):
         self.engine.cycle()
         rows=self.rows()
         signal=next(r for r in rows if r['stage']=='SIGNAL')
-        self.assertEqual(signal['data']['threshold'],'9500.00')
-        self.assertEqual(signal['data']['basis_source']['source'],'시작 시 B 평균 매입가')
+        self.assertEqual(signal['data']['state']['gap'],'5.00')
+        self.assertEqual(signal['data']['strategy_revision'],'average-gap-market-v2')
         self.assertEqual(signal['data']['config_snapshot']['a_sell_percent'],'10')
         stages=[r['stage'] for r in rows]
         for stage in ('SELL_QUANTITY','PRE_SALE_BUDGET','ORDER_CALL','ORDER_ACCEPTED','FILL_CONFIRMED',
                       'POST_SALE_BUDGET','BALANCE_CHECK','PURCHASE_COMPLETED','COMPLETED'):
             self.assertIn(stage,stages)
-        self.assertEqual(rows[-1]['data']['next_state'],{'reference':'9500','mode':'SELL'})
+        self.assertTrue(rows[-1]['data']['next_state']['armed'])
         self.assertTrue(all(r['trace']==self.engine.trace_id for r in rows))
-        self.assertIn('신호 목표가',readable(signal))
+        self.assertIn('갭',readable(signal))
         self.assertNotIn('1234567890',json.dumps(rows))
 
     def test_cash_only_delay_rechecks_without_selling_again(self):
@@ -108,9 +108,7 @@ class DiagnosticsTests(unittest.TestCase):
         other=Journal(self.journal.path)
         self.assertEqual(other.audit_rows(self.engine.trace_id),self.rows())
         self.assertEqual(other.audit_traces()[0][0],self.engine.trace_id)
-        metadata=other.state_metadata(self.broker.account,'005930','000660')
-        self.assertEqual(metadata['source'],'B 전량 매수 체결 평균가')
-        self.assertEqual(metadata['order'],'2')
+        self.assertTrue(other.gap_armed(self.broker.account,'005930','000660'))
 
 
 class WireTests(unittest.TestCase):

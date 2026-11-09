@@ -1,7 +1,7 @@
 """Two-stock live trading engine. No network calls occur on import."""
 from dataclasses import dataclass, replace
 from contextlib import contextmanager
-from decimal import Decimal, InvalidOperation, ROUND_FLOOR
+from decimal import Decimal, InvalidOperation, ROUND_FLOOR, ROUND_HALF_UP
 from datetime import datetime, timedelta, timezone
 import json
 import re
@@ -75,12 +75,10 @@ class Config:
     daily_max: int
     reserve_percent: Decimal = D('1')
     poll_seconds: int = 3
-    drop_percent: Decimal = D('5')
-    rise_percent: Decimal = D('5')
+    gap_percent: Decimal = D('5')
+    quantity_mode: str = 'DAILY_FIXED'
     a_sell_percent: Decimal = D('10')
-    b_sell_percent: Decimal = D('5')
-    initial_price: Decimal = D('0')
-    initial_mode: str = 'BOTH'
+    b_sell_percent: Decimal = D('10')
 
     def validate(self):
         if len(self.rules) != 2:
@@ -93,9 +91,8 @@ class Config:
             raise Halt('투자 한도는 100만~10억원입니다.')
         if not isinstance(self.daily_max, int) or not 1 <= self.daily_max <= 1000:
             raise Halt('일일 최대 횟수는 1~1000회입니다.')
-        for value in (self.drop_percent, self.rise_percent):
-            if not 0 < number(value) < 100:
-                raise Halt('등락 신호 비율은 0% 초과 100% 미만입니다.')
+        if not 0 < number(self.gap_percent) < 100:raise Halt('갭은 0 초과 100 미만 %p입니다.')
+        if self.quantity_mode not in ('DAILY_FIXED','PERCENT'):raise Halt('매도수량 방식 오류')
         for value in (self.a_sell_percent, self.b_sell_percent):
             if not 0 < number(value) <= 100:
                 raise Halt('매도 수량 비율은 0% 초과 100% 이하입니다.')
@@ -103,8 +100,6 @@ class Config:
             raise Halt('거래비용 예비율은 0.5~10%입니다.')
         if not 2 <= self.poll_seconds <= 60:
             raise Halt('조회 간격은 2~60초입니다.')
-        if number(self.initial_price) < 0 or self.initial_mode not in ('BOTH', 'BUY', 'SELL'):
-            raise Halt('첫 기준가/대기 방향 설정 오류')
 
 
 @dataclass(frozen=True)
@@ -124,20 +119,31 @@ class Holding:
         return (self.average - self.current) / self.average * 100
 
 
-def signal(config, state, current):
-    reference = number(state['reference'])
-    current = number(current)
-    if reference <= 0 or current <= 0:
-        raise Halt('기준가/현재가는 0보다 커야 합니다.')
-    if state['mode'] in ('BOTH', 'BUY') and current <= reference * (1 - config.drop_percent / 100):
-        return 'BUY'
-    if state['mode'] in ('BOTH', 'SELL') and current >= reference * (1 + config.rise_percent / 100):
-        return 'SELL'
-    return None
+def gap_snapshot(config, hs):
+    a,b=(hs[r.code] for r in config.rules)
+    for h in (a,b):
+        if h.qty<=0 or h.average<=0 or h.current<=0:raise Halt('갭 계산에는 A/B 모두 보유수량과 양수 평균 매입가가 필요합니다.')
+    ar=(a.current/a.average-1)*100;br=(b.current/b.average-1)*100
+    gap=ar-br
+    return {'a_return':str(ar),'b_return':str(br),'gap':str(gap),'absolute_gap':str(abs(gap)),
+            'threshold':str(config.gap_percent),'direction':'A_TO_B' if gap>=config.gap_percent else 'B_TO_A' if gap<=-config.gap_percent else None,
+            'a_average':str(a.average),'b_average':str(b.average),'a_current':str(a.current),'b_current':str(b.current)}
+
+
+def rounded_lot(qty, percent):
+    return int((D(qty)*number(percent)/100).to_integral_value(rounding=ROUND_HALF_UP))
 
 
 def sale_qty(source, percent):
-    return min(source.available, int(D(source.qty) * percent / 100))
+    # Do not silently shrink a configured sale when stock is reserved/unavailable.
+    qty=rounded_lot(source.qty,percent)
+    return qty if 0<qty<=source.available else 0
+
+
+def planned_qty(config, source, lots):
+    qty=lots['lots'].get(source.code,0) if config.quantity_mode=='DAILY_FIXED' else rounded_lot(source.qty,
+        config.a_sell_percent if source.code==config.rules[0].code else config.b_sell_percent)
+    return qty if 0<qty<=source.available and qty<=source.qty else 0
 
 
 def buy_qty(price, proceeds, cash, headroom, reserve_percent):
@@ -189,13 +195,9 @@ class Journal:
               id INTEGER PRIMARY KEY, trace TEXT NOT NULL, at TEXT NOT NULL,
               stage TEXT NOT NULL, explanation TEXT NOT NULL, data TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS audit_trace ON audit(trace,id);
-            CREATE TABLE IF NOT EXISTS strategy_meta(
-              account TEXT NOT NULL,a TEXT NOT NULL,b TEXT NOT NULL,source TEXT NOT NULL,
-              at TEXT NOT NULL,order_no TEXT,PRIMARY KEY(account,a,b));
-            CREATE TABLE IF NOT EXISTS strategy_state(
-              account TEXT NOT NULL, a TEXT NOT NULL, b TEXT NOT NULL,
-              reference TEXT NOT NULL, mode TEXT NOT NULL,
-              PRIMARY KEY(account,a,b));
+            CREATE TABLE IF NOT EXISTS gap_state(account TEXT,a TEXT,b TEXT,armed INTEGER NOT NULL,PRIMARY KEY(account,a,b));
+            CREATE TABLE IF NOT EXISTS daily_lots(day TEXT,account TEXT,a TEXT,b TEXT,detail TEXT NOT NULL,PRIMARY KEY(day,account,a,b));
+            CREATE TABLE IF NOT EXISTS gap_inventory(account TEXT,a TEXT,b TEXT,detail TEXT NOT NULL,PRIMARY KEY(account,a,b));
             CREATE TABLE IF NOT EXISTS events(
               id INTEGER PRIMARY KEY, at TEXT NOT NULL, message TEXT NOT NULL);
             ''')
@@ -218,7 +220,7 @@ class Journal:
         with self.connect() as db:
             return db.execute('SELECT COUNT(*) FROM cycles WHERE day=? AND account=?', (day, account)).fetchone()[0]
 
-    def reserve(self, day, account, maximum, detail):
+    def reserve(self, day, account, maximum, detail, gap_pair=None):
         with self.connect() as db:
             db.execute('BEGIN IMMEDIATE')
             if db.execute("SELECT 1 FROM cycles WHERE phase NOT IN ('DONE','RECONCILED')").fetchone():
@@ -227,45 +229,51 @@ class Journal:
                 raise Halt('하루 최대 실행 횟수에 도달했습니다.')
             cur = db.execute('INSERT INTO cycles(day,account,phase,detail) VALUES(?,?,?,?)',
                              (day, account, 'SELL_INTENT', json.dumps(detail, ensure_ascii=False)))
+            if gap_pair:db.execute('INSERT OR REPLACE INTO gap_state VALUES(?,?,?,0)',(account,*gap_pair))
             return cur.lastrowid
 
     def update(self, ident, phase, detail):
         with self.connect() as db:
             db.execute('UPDATE cycles SET phase=?,detail=? WHERE id=?', (phase, json.dumps(detail, ensure_ascii=False), ident))
 
-    def state(self, account, a, b):
+    def gap_armed(self,account,a,b):
         with self.connect() as db:
-            row = db.execute('SELECT reference,mode FROM strategy_state WHERE account=? AND a=? AND b=?',
-                             (account, a, b)).fetchone()
-            return {'reference': row[0], 'mode': row[1]} if row else None
+            row=db.execute('SELECT armed FROM gap_state WHERE account=? AND a=? AND b=?',(account,a,b)).fetchone()
+        return bool(row[0]) if row else True
 
-    def set_state(self, account, a, b, reference, mode, ident=None, phase=None, detail=None, basis_source=None):
-        if number(reference) <= 0 or mode not in ('BOTH', 'BUY', 'SELL'):
-            raise Halt('저장할 전략 기준 오류')
-        with self.connect() as db:
-            db.execute('INSERT OR REPLACE INTO strategy_state VALUES(?,?,?,?,?)',
-                       (account, a, b, str(reference), mode))
-            source = basis_source or ('B 전량 매도 체결 평균가' if phase=='SELL_FILLED' else 'B 전량 매수 체결 평균가' if phase=='BUY_FILLED' else '초기 설정 또는 이전 버전 기준')
-            order_no = (detail or {}).get('sell_order' if phase=='SELL_FILLED' else 'buy_order')
-            db.execute('INSERT OR REPLACE INTO strategy_meta VALUES(?,?,?,?,?,?)',
-                       (account,a,b,source,datetime.now(KST).isoformat(),order_no))
-            if ident is not None:
-                db.execute('UPDATE cycles SET phase=?,detail=? WHERE id=?',
-                           (phase, json.dumps(detail, ensure_ascii=False), ident))
+    def arm_gap(self,account,a,b):
+        with self.connect() as db:db.execute('INSERT OR REPLACE INTO gap_state VALUES(?,?,?,1)',(account,a,b))
 
-    def state_metadata(self, account, a, b):
+    def lots(self,day,account,config,hs,persist=False):
+        a,b=(r.code for r in config.rules)
         with self.connect() as db:
-            row=db.execute('SELECT source,at,order_no FROM strategy_meta WHERE account=? AND a=? AND b=?',(account,a,b)).fetchone()
-        return dict(source=row[0],at=row[1],order=row[2]) if row else {'source':'이전 버전 저장 기준(세부 출처 기록 없음)'}
+            if persist:db.execute('BEGIN IMMEDIATE')
+            row=db.execute('SELECT detail FROM daily_lots WHERE day=? AND account=? AND a=? AND b=?',(day,account,a,b)).fetchone()
+            if row:return json.loads(row[0])
+            result={'day':day,'captured_at':datetime.now(KST).isoformat(),'baseline':{r.code:hs[r.code].qty for r in config.rules},
+                    'lots':{a:rounded_lot(hs[a].qty,config.a_sell_percent),b:rounded_lot(hs[b].qty,config.b_sell_percent)},
+                    'percents':{a:str(config.a_sell_percent),b:str(config.b_sell_percent)},'saved':persist}
+            if persist:db.execute('INSERT INTO daily_lots VALUES(?,?,?,?,?)',(day,account,a,b,json.dumps(result)))
+            return result
 
-    def reset_state(self, account, a, b):
+    def inventory(self,account,a,b):
+        with self.connect() as db:row=db.execute('SELECT detail FROM gap_inventory WHERE account=? AND a=? AND b=?',(account,a,b)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    @staticmethod
+    def inventory_detail(config,hs):
+        return {r.code:{'qty':hs[r.code].qty,'average':str(hs[r.code].average)} for r in config.rules}
+
+    def save_inventory(self,account,config,hs,ident=None,detail=None,armed=None):
+        a,b=(r.code for r in config.rules)
         with self.connect() as db:
-            db.execute('BEGIN IMMEDIATE')
-            if db.execute("SELECT 1 FROM cycles WHERE phase NOT IN ('DONE','RECONCILED')").fetchone():
-                raise Halt('미완료 거래를 먼저 확인해야 기준을 초기화할 수 있습니다.')
-            db.execute('DELETE FROM strategy_state WHERE account=? AND a=? AND b=?', (account, a, b))
-            db.execute('DELETE FROM strategy_meta WHERE account=? AND a=? AND b=?', (account,a,b))
-        self.event('사용자가 B 순환매 기준을 초기화했습니다. 일일 횟수는 유지합니다.')
+            db.execute('INSERT OR REPLACE INTO gap_inventory VALUES(?,?,?,?)',(account,a,b,json.dumps(self.inventory_detail(config,hs))))
+            if ident is not None:db.execute("UPDATE cycles SET phase='DONE',detail=? WHERE id=?",(json.dumps(detail),ident))
+            if armed is not None:db.execute('INSERT OR REPLACE INTO gap_state VALUES(?,?,?,?)',(account,a,b,int(armed)))
+
+    def clear_inventory(self,account,a,b):
+        # Explicit HTS reconciliation preserves daily lots and re-entry latch.
+        with self.connect() as db:db.execute('DELETE FROM gap_inventory WHERE account=? AND a=? AND b=?',(account,a,b))
 
     def event(self, message):
         with self.connect() as db:
@@ -367,7 +375,8 @@ class Engine:
         for label, source, target, percent in (
             ('A→B', hs[self.config.rules[0].code], hs[self.config.rules[1].code], self.config.a_sell_percent),
             ('B→A', hs[self.config.rules[1].code], hs[self.config.rules[0].code], self.config.b_sell_percent)):
-            qty = sale_qty(source, percent)
+            lots=self.journal.lots(datetime.now(KST).strftime('%Y%m%d'),self.account,self.config,hs)
+            qty = planned_qty(self.config,source,lots)
             proceeds = source.current * qty
             headroom = D(self.config.cap-total) + (D(source.cost)*qty/source.qty if source.qty else 0)
             n = buy_qty(target.current, proceeds, proceeds, headroom, self.config.reserve_percent)
@@ -416,14 +425,27 @@ class Engine:
         self.emit('notice', {'subject': prefix + title, 'body': body})
 
     def strategy(self, state, current=None):
-        ref = number(state['reference'])
-        buy = ref * (1 - self.config.drop_percent / 100)
-        sell = ref * (1 + self.config.rise_percent / 100)
-        text = f'B 기준 {ref:,.4f}원 / 대기 {state["mode"]} / 매수 ≤ {buy:,.4f} / 매도 ≥ {sell:,.4f}'
-        if current is not None:
-            text += f' / B 현재가 {current:,.0f}'
-        self.emit('strategy', text)
+        text=f"A 수익률 {number(state['a_return']):+.4f}% / B 수익률 {number(state['b_return']):+.4f}% / 갭 {number(state['gap']):+.4f}%p / 기준 {self.config.gap_percent}%p"
+        self.emit('strategy',text);self.emit('gap',state)
         return text
+
+    def quote_pair(self,hs):
+        for r in self.config.rules:
+            current=self.broker.quote(r.code,r.name)
+            hs[r.code]=replace(hs.get(r.code,Holding(r.code,r.name,0,0,D(0),current,0)),current=current)
+        snapshots=getattr(self.broker,'quote_snapshots',None)
+        if isinstance(snapshots,dict) and snapshots:
+            times=[datetime.fromisoformat(snapshots[r.code]['received_at']) for r in self.config.rules]
+            now=datetime.now(KST)
+            if any(not 0<=(now-t).total_seconds()<=30 for t in times) or abs((times[0]-times[1]).total_seconds())>5:
+                raise Halt('두 종목 시세 시각 차이 5초 초과 또는 30초 이상 지연. 새 주문 차단')
+        return hs
+
+    def waiting(self,state,reason):
+        self.strategy(state);self.emit('trade_wait',dict(state,reason=reason))
+        if time.monotonic()-self.last_wait_audit>30:
+            self.audit('WAITING',reason,state=state);self.last_wait_audit=time.monotonic()
+        return False
 
     def wait_fill(self, order, symbol, side, qty):
         deadline = time.monotonic() + 60
@@ -460,8 +482,8 @@ class Engine:
             self.check()
             self.journal.update(ident, phase + '_INTENT', detail)
             self.check()
-            self.audit('ORDER_CALL', f'{side} 주문 함수 호출: {symbol} {qty}주 / 현재가 지정가 {price:,.0f}원',
-                       side=side, symbol=symbol, qty=qty, limit_price=str(price), order_type='보통 지정가',
+            self.audit('ORDER_CALL', f'{side} 주문 함수 호출: {symbol} {qty}주 / 시장가 수량 산정 참고가 {price:,.0f}원',
+                       side=side, symbol=symbol, qty=qty, reference_price=str(price), order_type='시장가',
                        settings={'cap':self.config.cap,'reserve_percent':str(self.config.reserve_percent)})
             # The broker hook runs immediately before the actual HTTP transmission.
             def transmitted(stage,data):
@@ -488,10 +510,10 @@ class Engine:
             self.order_outcome = 'ACCEPTED'
             self.order_statuses[phase] = 'ACCEPTED'
             self.audit('ORDER_ACCEPTED', f'{side} 접수 확인 / 주문번호 {order}', side=side, symbol=symbol,
-                       qty=qty, price=str(price), order=order)
+                       qty=qty, reference_price=str(price),order_type='시장가',order=order)
             detail[phase.lower() + '_order'] = order
             self.journal.update(ident, phase + '_SENT', detail)
-            self.notice(f'{side} 주문 접수 {symbol}', f'주문번호 {order} / {qty}주 / 지정가 {price:,.0f}원')
+            self.notice(f'{side} 주문 접수 {symbol}', f'주문번호 {order} / {qty}주 / 시장가 · 산정 참고가 {price:,.0f}원')
             return order
 
     def cycle(self):
@@ -510,9 +532,10 @@ class Engine:
             self.failure_stage = failed_stage
             reason = str(exc) if isinstance(exc, Halt) else f'내부 오류({type(exc).__name__})'
             a,b = self.config.rules
-            state = self.journal.state(self.account,a.code,b.code)
+            state = {'armed':self.journal.gap_armed(self.account,a.code,b.code)}
             unresolved = bool(self.journal.active())
-            self.audit('HALTED', reason, failed_stage=failed_stage,
+            recoverable=isinstance(exc,ApiFailure) and exc.outcome=='QUERY_FAILED' and (exc.error_code is None or str(exc.error_code) in ('429','500','502','503','504')) and not unresolved and all(v=='NOT_SENT' for v in self.order_statuses.values())
+            self.audit('QUERY_PAUSED' if recoverable else 'HALTED', reason, failed_stage=failed_stage,
                        order_outcome=self.order_outcome or 'NOT_SENT', orders=self.order_statuses, completed_legs=self.completed_legs,
                        cash_query=getattr(self.broker,'last_cash_snapshot',None),
                        api=getattr(exc,'api',None), broker_code=getattr(exc,'error_code',None),
@@ -538,56 +561,47 @@ class Engine:
         self.last_total_cost = total
         if total > self.config.cap:
             raise Halt('기존 두 종목 합산 매입원금이 투자 한도를 초과합니다.')
-        a, b = self.config.rules
-        state = self.journal.state(self.account, a.code, b.code)
-        if state is None:
-            reference = self.config.initial_price or hs[b.code].average
-            if reference <= 0:
-                raise Halt('B 보유 평균가가 없습니다. 첫 기준가를 직접 입력하세요.')
-            state = {'reference': str(reference), 'mode': self.config.initial_mode}
-            self.journal.set_state(self.account, a.code, b.code, reference, state['mode'],
-                                   basis_source='UI에서 직접 지정한 첫 기준가' if self.config.initial_price else '시작 시 B 평균 매입가')
-        self.strategy(state, hs[b.code].current)
-        action = signal(self.config, state, hs[b.code].current)
-        if action is None:
-            self.emit('trade_wait',{'reference':state['reference'],'mode':state['mode'],
-                'current':str(hs[b.code].current),'buy_target':str(number(state['reference'])*(1-self.config.drop_percent/100)),
-                'sell_target':str(number(state['reference'])*(1+self.config.rise_percent/100))})
-            if time.monotonic() - self.last_wait_audit > 30:
-                self.audit('WAITING', '정상 대기: 현재 B 가격이 허용된 방향의 목표가에 도달하지 않았습니다.',
-                           state=state, current=str(hs[b.code].current), feasibility=feasibility)
-                self.last_wait_audit = time.monotonic()
-            self.emit('log', '조건 대기 중')
+        a,b=self.config.rules
+        hs=self.quote_pair(hs)
+        try:state=gap_snapshot(self.config,hs)
+        except Halt as exc:
+            self.emit('trade_wait',{'reason':str(exc),'direction':None})
+            self.audit('WAITING',str(exc),no_order=True)
+            self.emit('notice',{'subject':'갭 계산 보류','body':str(exc)+' 보유종목과 평균가를 확인하세요. 조건 복구 시 자동 재평가합니다.'})
             return False
-        ref = number(state['reference'])
-        threshold = ref * (1-self.config.drop_percent/100) if action == 'BUY' else ref*(1+self.config.rise_percent/100)
-        self.audit('SIGNAL', 'B 하락 신호: A를 팔아 B 추가 매수' if action == 'BUY' else 'B 상승 신호: B를 팔아 A로 자금 이동',
-                   state=state, basis_source=self.journal.state_metadata(self.account,a.code,b.code),
-                   b_current=str(hs[b.code].current), b_average=str(hs[b.code].average),
-                   threshold=str(threshold), comparison='<=' if action=='BUY' else '>=',
-                   trigger_percent=str(self.config.drop_percent if action=='BUY' else self.config.rise_percent),
-                   quote_snapshots=getattr(self.broker,'quote_snapshots',None),
-                   action=action, strategy_revision='alternating-b-fill-v1',
-                   config_snapshot={'A':{'code':a.code,'name':a.name},'B':{'code':b.code,'name':b.name},
-                       'drop_percent':str(self.config.drop_percent),'rise_percent':str(self.config.rise_percent),
-                       'a_sell_percent':str(self.config.a_sell_percent),'b_sell_percent':str(self.config.b_sell_percent),
-                       'reserve_percent':str(self.config.reserve_percent),'poll_seconds':self.config.poll_seconds,
-                       'initial_price':str(self.config.initial_price),'initial_mode':self.config.initial_mode},
-                   cap=self.config.cap, total_cost=total, daily_max=self.config.daily_max,
-                   daily_count=self.journal.count(day,self.account), feasibility=feasibility)
-        target, source = (hs[b.code], hs[a.code]) if action == 'BUY' else (hs[a.code], hs[b.code])
-        percent = self.config.a_sell_percent if action == 'BUY' else self.config.b_sell_percent
-        qty = sale_qty(source, percent)
-        self.audit('SELL_QUANTITY', f'{source.name}: 보유 {source.qty}주 × {percent}% → 매도가능수량 반영 후 {qty}주',
-                   source=source.code, target=target.code, held=source.qty, available=source.available,
-                   percent=str(percent), raw_qty=str(D(source.qty)*percent/100), qty=qty,
-                   average_cost=str(source.average), total_cost=source.cost,
-                   estimated_profit_before_costs=str(source.current*qty - D(source.cost)*qty/source.qty) if source.qty else '0')
-        if qty < 1:
-            raise Halt('설정 비율로 매도 가능한 상대 종목 수량이 1주 미만입니다.')
+        previous=self.journal.inventory(self.account,a.code,b.code)
+        current_inventory=self.journal.inventory_detail(self.config,hs)
+        if previous:
+            for r in self.config.rules:
+                old=previous[r.code];new=current_inventory[r.code]
+                if old['qty']!=new['qty'] or abs(number(old['average'])-number(new['average']))>D('1'):
+                    raise Halt('프로그램 예상과 다른 보유수량/평균가 변경 감지. 수동거래·분할·잔고 응답을 영웅문과 대조하세요.')
+        else:self.journal.save_inventory(self.account,self.config,hs)
+        lots=self.journal.lots(day,self.account,self.config,hs,persist=True)
+        state.update(armed=self.journal.gap_armed(self.account,a.code,b.code),daily_lots=lots)
+        self.strategy(state)
+        if number(state['absolute_gap'])<self.config.gap_percent:
+            if not state['armed']:self.journal.arm_gap(self.account,a.code,b.code);state['armed']=True
+            return self.waiting(state,'정상 대기: 갭이 기준 미만입니다. 다음 기준 도달을 감시합니다.')
+        if not state['armed']:return self.waiting(state,'재진입 대기: 거래 후 갭이 기준 미만으로 줄어든 것을 확인해야 합니다.')
+        action=state['direction']
+        source,target=(hs[a.code],hs[b.code]) if action=='A_TO_B' else (hs[b.code],hs[a.code])
+        qty=planned_qty(self.config,source,lots)
+        if qty<1:
+            self.notice('거래 수량 보류',f'{source.name}: 당일 고정/비율 수량이 0주이거나 매도가능수량 부족. 보유·예약 주문을 확인하세요. 조건 복구 시 재평가합니다.')
+            return self.waiting(state,'수량 조건 대기: 설정 수량 0주 또는 매도가능수량 부족. 임의로 수량을 줄여 팔지 않습니다.')
+        self.audit('SIGNAL','평균 매입가 대비 수익률 갭 도달: 수익률 높은 종목 매도 → 낮은 종목 매수',
+            state=state,action=action,strategy_revision='average-gap-market-v2',
+            config_snapshot={'A':{'code':a.code,'name':a.name},'B':{'code':b.code,'name':b.name},
+                'gap_percent':str(self.config.gap_percent),'quantity_mode':self.config.quantity_mode,
+                'a_sell_percent':str(self.config.a_sell_percent),'b_sell_percent':str(self.config.b_sell_percent)},
+            quote_snapshots=getattr(self.broker,'quote_snapshots',None))
+        self.audit('SELL_QUANTITY',f'{source.name}: {self.config.quantity_mode} 방식 매도 {qty}주',source=source.code,
+            target=target.code,held=source.qty,available=source.available,qty=qty,daily_lots=lots)
         self.last_stage = 'PRE_SALE_PRICE_QUERY'
         sell_price = self.broker.quote(source.code, source.name)
-        buy_price = self.broker.quote(target.code, target.name)
+        buy_current = self.broker.quote(target.code, target.name)
+        buy_price = self.broker.market_buy_bound(target.code,buy_current)
         # Precheck avoids selling if estimated proceeds cannot buy even one share.
         headroom = D(self.config.cap - total) + D(source.cost) * qty / source.qty
         self.last_stage = 'PRE_SALE_CASH_QUERY'
@@ -600,17 +614,25 @@ class Engine:
         self.audit('PRE_SALE_BUDGET', '매도 전 매수 가능수량 사전 검사. 현금은 매도대금 반영을 가정한 예상값입니다.',
                    budget=preflight, cash_before=str(cash_before), sell_price=str(sell_price))
         if preflight['quantity'] < 1:
-            raise Halt('예상 매도금/현금/투자 한도로 대상 종목 1주를 매수할 수 없습니다.')
+            self.notice('매수 예산 보류','예상 매도금과 비용 예비율로 상대 종목 1주를 살 수 없습니다. 수량/가격/한도를 확인하세요.')
+            return self.waiting(state,'예산 조건 대기: 예상 매도금으로 대상 종목 1주 매수 불가')
+        hs=self.quote_pair(hs);confirmed=gap_snapshot(self.config,hs)
+        if confirmed['direction']!=action:return self.waiting(confirmed,'주문 직전 갭이 변경되어 주문 보류')
+        sell_price=hs[source.code].current;buy_price=hs[target.code].current
         detail = {'action': action, 'previous_state': state, 'source': source.code, 'target': target.code, 'sell_qty': qty,
-                  'sell_limit': str(sell_price), 'before_source': source.qty,
+                  'sell_reference': str(sell_price),'order_type':'시장가', 'before_source': source.qty,
                   'before_target': target.qty}
         self.check()
-        ident = self.journal.reserve(day, self.account, self.config.daily_max, detail)
+        fresh=self.broker.holdings()
+        if any(r.code not in fresh or fresh[r.code].qty!=hs[r.code].qty or abs(fresh[r.code].average-hs[r.code].average)>1 for r in self.config.rules) or fresh[source.code].available<qty:
+            raise Halt('주문 직전 잔고/매도가능수량 변경. 새 주문 차단')
+        self.check()
+        ident = self.journal.reserve(day, self.account, self.config.daily_max, detail,gap_pair=(a.code,b.code))
         self.cycle_id = ident
         detail['trace_id'] = self.trace_id
         self.audit('CYCLE_RESERVED', f'사이클 {ident} 일일 실행 횟수 예약 완료', detail=detail)
         self.emit('log', f'사이클 {ident}: {source.name} {qty}주 매도 → {target.name} 추가 매수')
-        self.notice('순환매 신호 발생', f'B {action} / {source.name} {qty}주 매도 → {target.name} 매수\n' + self.strategy(state, hs[b.code].current))
+        self.notice('순환매 신호 발생', f'{action} /  {source.name} {qty}주 매도 → {target.name} 매수\n' + self.strategy(state))
         order = self.send(ident, 'SELL', detail, '매도', source.code, qty, sell_price)
         proceeds = self.wait_fill(order, source.code, '매도', qty)
         self.completed_legs.append('SELL')
@@ -619,10 +641,7 @@ class Engine:
                    source=source.code, quantity=qty, proceeds=str(proceeds),
                    estimated_profit_before_costs=str(proceeds-D(source.cost)*qty/source.qty))
         detail['gross_proceeds'] = str(proceeds)
-        if action == 'SELL':
-            self.journal.set_state(self.account, a.code, b.code, proceeds / qty, 'BUY', ident, 'SELL_FILLED', detail)
-        else:
-            self.journal.update(ident, 'SELL_FILLED', detail)
+        self.journal.update(ident, 'SELL_FILLED', detail)
         # Wait for account quantities to reflect execution, never reuse stale average.
         refreshed = self.await_balances(source.code, source.qty - qty, target.code, target.qty)
         self.check()
@@ -630,23 +649,25 @@ class Engine:
         n, buy_price = self.funded_quantity(target, proceeds, self.config.cap-current_total)
         if n < 1:
             raise Halt('매도 후 실제 매수 가능수량이 1주 미만입니다. 후속 매수 주문은 전송하지 않았습니다.')
-        detail.update(buy_qty=n, buy_limit=str(buy_price))
+        detail.update(buy_qty=n, buy_budget_basis=str(buy_price))
         order = self.send(ident, 'BUY', detail, '매수', target.code, n, buy_price)
         buy_gross = self.wait_fill(order, target.code, '매수', n)
         self.completed_legs.append('BUY')
         self.order_statuses['BUY'] = 'FILLED'
         self.audit('PURCHASE_COMPLETED', f'{target.name} {n}주 전량 매수. 실제 {buy_gross:,.0f}원',
                    target=target.code, quantity=n, gross=str(buy_gross), average=str(buy_gross/n))
-        if action == 'BUY':
-            self.journal.set_state(self.account, a.code, b.code, buy_gross / n, 'SELL', ident, 'BUY_FILLED', detail)
-        else:
-            self.journal.update(ident, 'BUY_FILLED', detail)
-        refreshed = self.await_balances(source.code, source.qty - qty, target.code, target.qty + n)
+        self.journal.update(ident, 'BUY_FILLED', detail)
+        refreshed = self.await_balances(source.code, source.qty - qty, target.code, target.qty + n,expected_average=(target.average*target.qty+buy_gross)/(target.qty+n),target=target.code)
+        refreshed=self.quote_pair(refreshed)
         if sum(refreshed[r.code].cost for r in self.config.rules if r.code in refreshed) > self.config.cap:
             raise Halt('체결 후 투자 한도 초과 감지. 자동매매 중지')
-        self.journal.update(ident, 'DONE', detail)
-        next_state = self.journal.state(self.account, a.code, b.code)
-        self.audit('COMPLETED', '매도와 상대 종목 매수, 잔고 확인을 완료했습니다. 다음 반대 방향 조건을 기다립니다.',
+        try:
+            next_state=gap_snapshot(self.config,refreshed)
+            armed=number(next_state['absolute_gap'])<self.config.gap_percent
+        except Halt:next_state=dict(state,direction=None);armed=False
+        self.journal.save_inventory(self.account,self.config,refreshed,ident,detail,armed=armed)
+        next_state.update(armed=armed,daily_lots=lots)
+        self.audit('COMPLETED', '매도와 상대 종목 매수, 잔고 확인을 완료했습니다. 갭이 기준 미만으로 줄어든 후 재도달하는 조건을 기다립니다.',
                    previous_state=state, next_state=next_state, completed_legs=self.completed_legs,
                    remaining_sale_cash_before_costs=str(proceeds-buy_gross),
                    total_cost=sum(refreshed[r.code].cost for r in self.config.rules if r.code in refreshed),
@@ -662,7 +683,8 @@ class Engine:
         for attempt in range(11):
             self.check()
             self.last_stage = 'POST_SALE_PRICE_QUERY'
-            price = self.broker.quote(target.code,target.name)
+            current = self.broker.quote(target.code,target.name)
+            price = self.broker.market_buy_bound(target.code,current)
             self.last_stage = 'POST_SALE_CASH_QUERY'
             cash = self.broker.cash()
             self.last_stage = 'TARGET_CASH_CAPACITY_QUERY'
@@ -688,16 +710,17 @@ class Engine:
                 self.check()
         raise Halt('현금 재조회 종료')
 
-    def await_balances(self, source, source_qty, target, target_qty):
+    def await_balances(self, source, source_qty, target_code, target_qty,expected_average=None,target=None):
         for _ in range(10):
             self.check()
             self.last_stage = 'BALANCE_QUERY'
             hs = self.broker.holdings()
             sq = hs[source].qty if source in hs else 0
-            tq = hs[target].qty if target in hs else 0
+            tq = hs[target_code].qty if target_code in hs else 0
             self.audit('BALANCE_CHECK', '체결 후 계좌 보유수량 대조', source=source, target=target,
-                       expected_source=source_qty, actual_source=sq, expected_target=target_qty, actual_target=tq)
-            if sq == source_qty and tq == target_qty:
+                       expected_source=source_qty, actual_source=sq, expected_target=target_qty, actual_target=tq,expected_average=str(expected_average))
+            average_ok=expected_average is None or target in hs and abs(hs[target].average-expected_average)<=D('1')
+            if sq == source_qty and tq == target_qty and average_ok:
                 return hs
             if self.stop.wait(1):
                 self.check()
@@ -707,7 +730,15 @@ class Engine:
         self.notice('자동매매 시작', f'A: {self.config.rules[0].name} / B: {self.config.rules[1].name} / 한도 {self.config.cap:,}원')
         try:
             while not self.stop.is_set():
-                traded = self.cycle()
+                try:traded = self.cycle()
+                except ApiFailure as exc:
+                    safe=(exc.outcome=='QUERY_FAILED' and (exc.error_code is None or str(exc.error_code) in ('429','500','502','503','504')) and
+                          not self.journal.active() and all(v=='NOT_SENT' for v in self.order_statuses.values()))
+                    if not safe:raise
+                    self.notice('조회 장애 · 자동복구 대기',str(exc)+'\n원인: 읽기 조회 통신/서버 응답 실패. 주문 전송 없음.\n조치: 새 주문 보류, 30초 후 계좌·시세 재점검. 연결이 복구되면 자동 재개합니다.')
+                    self.emit('trade_wait',{'reason':'조회 장애 · 30초 후 자동 재점검','query_paused':True})
+                    if self.stop.wait(30):break
+                    continue
                 # Immediate next evaluation after completed cycles; rate limits still apply.
                 if not traded and self.stop.wait(self.config.poll_seconds):
                     break

@@ -32,7 +32,7 @@ class SchedulerTests(unittest.TestCase):
         self.c.telegram.thread.join(1);self.c.email.thread.join(1);self.temp.cleanup()
     def test_preopen_read_only_then_open_starts_once(self):
         self.scheduler.tick();self.assertFalse(self.c.running());self.assertIn('자동 시작 대기',self.c.schedule_status)
-        self.assertIsNone(self.c.journal.state('1234567890','005930','000660'))
+        self.assertIsNone(self.c.journal.inventory('1234567890','005930','000660'))
         self.now=self.now.replace(hour=9,minute=1)
         with patch.object(self.c,'start') as start:
             self.scheduler.tick();self.scheduler.tick()
@@ -55,7 +55,7 @@ class SchedulerTests(unittest.TestCase):
         with patch.object(self.c,'start') as start:self.scheduler.tick();start.assert_not_called()
         self.assertEqual(load_schedule(self.temp.name)['paused_day'],'20261109')
     def test_changed_config_blocks_and_deduplicates_alert(self):
-        self.c.save_config(dict(self.c.config,drop='3'))
+        self.c.save_config(dict(self.c.config,gap='3'))
         self.scheduler.tick();self.scheduler.tick()
         self.assertIn('변경',self.c.schedule['blocked']);self.c.telegram.notify.assert_called_once()
     def test_preflight_failure_persists_and_never_restarts_next_day(self):
@@ -142,6 +142,15 @@ class SchedulerTests(unittest.TestCase):
             self.scheduler.tick()
         self.assertFalse(self.c.running())
 
+    def test_preorder_transient_inspection_error_retries_without_blocking(self):
+        self.now=self.now.replace(hour=9,minute=1)
+        self.c.inspect=MagicMock(side_effect=__import__('core').ApiFailure('읽기 통신 오류'))
+        def finish(seconds):self.scheduler.stop.set();return True
+        with patch.object(self.scheduler.stop,'wait',side_effect=finish):self.scheduler.run()
+        self.assertFalse(self.c.schedule['blocked']);self.assertEqual(self.c.schedule['attempt_day'],'')
+        self.assertGreater(self.scheduler.retry_at,__import__('time').monotonic())
+        self.c.telegram.notify.assert_called_once()
+
 
 class CalendarTests(unittest.TestCase):
     def test_real_calendar_holiday_and_year_refresh(self):
@@ -175,3 +184,26 @@ class WindowsRegistrationTests(unittest.TestCase):
                 query=subprocess.run(['schtasks','/Query','/TN',name,'/XML'],capture_output=True)
                 self.assertEqual(query.returncode,0)
             finally:subprocess.run(['schtasks','/Delete','/TN',name,'/F'],capture_output=True)
+
+class ContinuousOperationTests(unittest.TestCase):
+    setUp=SchedulerTests.setUp
+    tearDown=SchedulerTests.tearDown
+    def test_two_months_do_not_expire_or_require_daily_confirmation(self):
+        self.scheduler.auto_exit=False
+        self.calendar.session.side_effect=lambda now:None if now.weekday()>4 else (now.replace(hour=9,minute=0),now.replace(hour=15,minute=30))
+        start_day=datetime(2026,11,9,8,45,tzinfo=KST);days=0
+        with patch.object(self.c,'start') as start:
+            for offset in range(62):
+                day=start_day+timedelta(days=offset)
+                if day.weekday()>4:continue
+                self.now=day;self.scheduler.tick()
+                self.now=day.replace(hour=9,minute=1);self.scheduler.tick()
+                self.now=day.replace(hour=15,minute=30);self.scheduler.tick()
+                days+=1
+            self.assertEqual(start.call_count,days)
+        self.assertTrue(self.c.schedule['enabled']);self.assertFalse(self.c.schedule['blocked'])
+    def test_user_stop_remains_suspended_across_month_boundary(self):
+        self.c.stop();self.assertTrue(self.c.schedule['suspended'])
+        self.now+=timedelta(days=40)
+        with patch.object(self.c,'start') as start:self.scheduler.tick();start.assert_not_called()
+        self.assertTrue(load_schedule(self.temp.name)['suspended'])

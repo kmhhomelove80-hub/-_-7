@@ -46,7 +46,7 @@ class ControllerTests(unittest.TestCase):
     def test_inspection_is_read_only_and_no_implicit_state_reset(self):
         report=self.c.inspect()
         self.assertTrue(report['can_start'])
-        self.assertIsNone(self.c.journal.state('1234567890','005930','000660'))
+        self.assertIsNone(self.c.journal.inventory('1234567890','005930','000660'))
         self.assertTrue(all(not b.orders for b in self.brokers))
     def test_start_requires_fresh_preview_and_both_confirmations(self):
         result=self.c.inspect()
@@ -74,7 +74,7 @@ class ControllerTests(unittest.TestCase):
         self.assertTrue(all(not b.orders for b in self.brokers))
 
     def test_configuration_change_invalidates_preview(self):
-        result=self.c.inspect();self.c.save_config(dict(self.c.config,drop='3'))
+        result=self.c.inspect();self.c.save_config(dict(self.c.config,gap='3'))
         with self.assertRaises(Halt):self.c.require_inspection(result['id'])
     def test_incomplete_reconciliation_is_separate_and_never_places_orders(self):
         identifier=self.c.journal.reserve(datetime.now(KST).strftime('%Y%m%d'),'1234567890',10,{})
@@ -92,11 +92,30 @@ class ControllerTests(unittest.TestCase):
             with self.assertRaises(Halt):demo.inspect()
         finally:demo.close();demo.telegram.thread.join(1);demo.email.thread.join(1)
     def test_immediate_signal_is_explained_before_start(self):
-        cfg=dict(self.c.config,initial_price='12000',initial_mode='BUY');self.c.save_config(cfg)
+        original=self.c.broker_factory
+        def factory(*args):
+            broker=original(*args);broker.hs['000660']=replace(broker.hs['000660'],current=D(9500));return broker
+        self.c.broker_factory=factory
         report=self.c.inspect()
         self.assertIn('즉시',report['immediate'])
         self.assertIn('A종목',report['immediate'])
         self.assertFalse(self.c.running())
+
+    def test_repeated_monitor_error_does_not_override_fresh_trade_checks(self):
+        self.c.schedule['enabled']=True;self.c.telegram.notify=MagicMock();self.c.email.notify=MagicMock()
+        with patch.object(self.c,'running',return_value=True):
+            for i in range(5):self.c.event('balance_error','일시적 표시 조회 오류')
+        self.assertFalse(self.c.schedule['blocked']);self.assertFalse(self.c.active_stop.is_set())
+        self.assertEqual(self.c.telegram.notify.call_count,1)
+
+    def test_legacy_reference_settings_not_imported_into_new_strategy(self):
+        self.c.config_path.write_text(json.dumps(dict(self.c.config,revision='old-b-only',initial_price='12000',initial_mode='SELL',a_sell='50',b_sell='5')))
+        other=Controller(Path(self.temp.name),self.vault,broker_factory=lambda *a:WebFakeBroker(),clock_factory=lambda:lambda:True,autoconnect=False)
+        try:
+            self.assertNotIn('initial_price',other.config);self.assertNotIn('initial_mode',other.config)
+            self.assertEqual(other.config['a_sell'],'10');self.assertEqual(other.config['b_sell'],'10')
+            self.assertEqual(other.config['revision'],'average-gap-market-v2')
+        finally:other.close();other.telegram.thread.join(1);other.email.thread.join(1)
 
 
 class RetryTests(unittest.TestCase):

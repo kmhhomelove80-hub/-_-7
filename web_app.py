@@ -81,7 +81,7 @@ class Handler(BaseHTTPRequestHandler):
                 elif route=='/api/inspect':result=c.inspect()
                 elif route=='/api/start':c.start(data);result=None
                 elif route=='/api/reconcile':c.reconcile(data);result=None
-                elif route=='/api/reset':c.reset(data);result=None
+                elif route=='/api/acknowledge-inventory':c.acknowledge_inventory(data);result=None
                 elif route=='/api/notifications':c.notification_config(data);result=None
                 elif route=='/api/telegram-chats':
                     c.mutation_allowed();from notifications import private_chat_ids
@@ -134,7 +134,7 @@ def main():
         from broker import MarketClock
         from datetime import timedelta
         root=data_directory();schedule=load_schedule(root)
-        if not schedule['enabled'] or schedule['paused_day']==datetime.now(KST).strftime('%Y%m%d'):return
+        if not schedule['enabled'] or schedule['suspended'] or schedule['paused_day']==datetime.now(KST).strftime('%Y%m%d'):return
         if not 8<=datetime.now(KST).hour<20:return
 
     if args.demo:
@@ -187,7 +187,7 @@ def main():
         try:
             from broker import MarketClock
             if args.scheduled and session and now>session[0]+timedelta(minutes=6) and not controller.schedule['blocked'] and controller.schedule['attempt_day']!=now.strftime('%Y%m%d'):
-                controller.schedule_issue('예정 자동 시작보다 5분 이상 늦게 실행됐습니다. PC 전원·로그인·절전을 확인하고 예약을 다시 승인하세요.')
+                controller.event('notice',{'subject':'예약 시작 지연','body':'예정 시각보다 5분 이상 늦게 실행됐습니다. 원인은 PC 전원·로그인·절전 여부를 확인해야 합니다. 최신 계좌·미체결을 점검한 후 정상 조건이면 자동 시작합니다.'})
             controller.begin_scheduler(calendar or MarketClock(),auto_exit=True)
         except Exception as exc:controller.schedule_issue('거래일 달력 초기화 실패. 예약을 중단했습니다. 달력과 프로그램 버전을 확인하세요.')
     if args.no_browser or args.scheduled:

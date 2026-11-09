@@ -8,7 +8,7 @@ import unittest
 from unittest.mock import patch
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from core import Config, Rule, Holding, D, Halt, Journal, Engine, KST, buy_qty, sale_qty, signal, fill_totals, number
+from core import Config, Rule, Holding, D, Halt, Journal, Engine, KST, buy_qty, sale_qty, gap_snapshot, rounded_lot, fill_totals, number
 from broker import Kiwoom
 
 
@@ -44,6 +44,9 @@ class FakeBroker:
 
     def quote(self, symbol, name):
         return self.hs[symbol].current
+
+    def market_buy_bound(self,symbol,price):
+        return price
 
     def cash(self):
         return self.cash_value
@@ -93,61 +96,6 @@ class StrategyTests(unittest.TestCase):
         h = self.broker.hs['000660']
         self.broker.hs[h.code] = replace(h, current=D(price))
 
-    def state(self):
-        return self.journal.state(self.broker.account, '005930', '000660')
-
-    def test_10500_sell_then_9975_buy_then_10473_75_sell(self):
-        self.price(10500)
-        self.assertTrue(self.engine.cycle())
-        self.assertEqual(self.broker.orders[0][:3], ('매도','000660',5))
-        self.assertEqual(self.broker.orders[1][1], '005930')
-        self.assertEqual(self.state(), {'reference':'10500', 'mode':'BUY'})
-        self.assertFalse(self.engine.cycle())
-        self.price(9976)
-        self.assertFalse(self.engine.cycle())
-        self.price(9975)
-        self.assertTrue(self.engine.cycle())
-        self.assertEqual(self.broker.orders[2][:3], ('매도','005930',10))
-        self.assertEqual(self.broker.orders[3][1], '000660')
-        self.assertEqual(self.state(), {'reference':'9975', 'mode':'SELL'})
-        self.price(10473)
-        self.assertFalse(self.engine.cycle())
-        self.price(10474)
-        self.assertTrue(self.engine.cycle())
-        self.assertEqual(self.state()['mode'], 'BUY')
-
-    def test_after_buy_further_drop_does_not_buy_again(self):
-        self.price(9500)
-        self.engine.cycle()
-        self.assertEqual(self.state(), {'reference':'9500', 'mode':'SELL'})
-        self.price(8500)
-        self.assertFalse(self.engine.cycle())
-        self.assertEqual(len(self.broker.orders),2)
-
-    def test_a_price_is_not_a_signal(self):
-        h = self.broker.hs['005930']
-        self.broker.hs[h.code] = replace(h, current=D(1000))
-        self.assertFalse(self.engine.cycle())
-        self.assertFalse(self.broker.orders)
-
-    def test_initial_custom_price_and_direction(self):
-        self.engine.config = replace(config(), initial_price=D(12000), initial_mode='BUY')
-        self.price(12600)
-        self.assertFalse(self.engine.cycle())
-        self.price(11400)
-        self.assertTrue(self.engine.cycle())
-
-    def test_state_persists_across_restart_and_average_changes(self):
-        self.price(10500)
-        self.engine.cycle()
-        self.price(9975)
-        h = self.broker.hs['000660']
-        self.broker.hs[h.code] = replace(h, average=D(30000))
-        self.engine = Engine(self.broker, config(), Journal(self.path), self.broker.account,
-                             lambda:True, lambda *a:None)
-        self.assertTrue(self.engine.cycle())
-        self.assertEqual(self.state()['reference'],'9975')
-
     def test_unknown_sell_blocked_after_restart(self):
         self.price(9500)
         self.broker.unknown_sell = True
@@ -157,60 +105,12 @@ class StrategyTests(unittest.TestCase):
             self.engine.cycle()
         self.assertEqual(len(self.broker.orders),1)
 
-    def test_partial_sell_never_buys_or_changes_reference(self):
-        self.price(10500)
-        self.broker.partial = True
-        with self.assertRaises(Halt):
-            self.engine.cycle()
-        self.assertEqual(len(self.broker.orders),1)
-        self.assertEqual(self.state()['reference'],'10000')
-        self.assertTrue(self.journal.active())
-
-    def test_b_sell_reference_saved_even_if_a_buy_fails(self):
-        self.price(10500)
-        original = self.broker.order
-        def order(side, *args):
-            if side == '매수':
-                raise Halt('매수 응답 끊김')
-            return original(side,*args)
-        self.broker.order=order
-        with self.assertRaises(Halt):
-            self.engine.cycle()
-        self.assertEqual(self.state(), {'reference':'10500','mode':'BUY'})
-        self.assertTrue(self.journal.active())
-
     def test_cap_prevents_orders(self):
         self.price(9500)
         self.engine.config = replace(config(), cap=1_000_000)
         with self.assertRaises(Halt):
             self.engine.cycle()
         self.assertFalse(self.broker.orders)
-
-    def test_daily_limit_shared_both_directions(self):
-        self.engine.config = config(1)
-        self.price(10500)
-        self.engine.cycle()
-        self.price(9975)
-        with self.assertRaises(Halt):
-            self.engine.cycle()
-        self.assertEqual(len(self.broker.orders),2)
-
-    def test_missing_a_inventory_does_not_impose_minimum_balance(self):
-        self.broker.hs['005930'] = replace(self.broker.hs['005930'], qty=0, available=0,cost=0,average=D(0))
-        self.price(10500)
-        self.assertTrue(self.engine.cycle())
-        self.assertGreater(self.broker.hs['005930'].qty,0)
-
-    def test_reset_preserves_daily_count_and_blocks_active_cycle(self):
-        self.price(10500)
-        self.engine.cycle()
-        day=datetime.now(KST).strftime('%Y%m%d')
-        self.journal.reset_state(self.broker.account,'005930','000660')
-        self.assertIsNone(self.state())
-        self.assertEqual(self.journal.count(day,self.broker.account),1)
-        self.journal.reserve(day,self.broker.account,10,{})
-        with self.assertRaises(Halt):
-            self.journal.reset_state(self.broker.account,'005930','000660')
 
     def test_stop_during_account_check_blocks_send(self):
         self.price(9500)
@@ -226,15 +126,6 @@ class StrategyTests(unittest.TestCase):
             self.engine.cycle()
         self.assertFalse(self.broker.orders)
 
-    def test_notice_events_cover_signal_orders_fills_and_completion(self):
-        self.price(10500)
-        self.engine.cycle()
-        notices=[p for e,p in self.events if e=='notice']
-        self.assertEqual(len(notices),6)
-        self.assertTrue(notices[0]['subject'].endswith('순환매 신호 발생'))
-        self.assertTrue(notices[-1]['subject'].endswith('순환매 완료'))
-        self.assertIn('10500', str(self.state()))
-
     def test_user_stop_and_market_closed_do_not_order(self):
         self.engine.stop.set()
         with self.assertRaises(Halt):
@@ -245,6 +136,96 @@ class StrategyTests(unittest.TestCase):
             self.engine.cycle()
         self.assertFalse(self.broker.orders)
 
+    def test_two_way_gap_trades_without_fixed_b_role(self):
+        self.broker.hs['005930']=replace(self.broker.hs['005930'],current=D(10500))
+        self.assertTrue(self.engine.cycle());self.assertEqual(self.broker.orders[0][:2],('매도','005930'))
+        self.assertFalse(self.journal.gap_armed(self.broker.account,'005930','000660'))
+
+    def test_completed_average_down_below_threshold_rearms(self):
+        self.broker.hs['005930']=replace(self.broker.hs['005930'],current=D(10100))
+        self.price(9600);self.assertTrue(self.engine.cycle())
+        self.assertTrue(self.journal.gap_armed(self.broker.account,'005930','000660'))
+
+    def test_market_buy_budget_bounds_full_fill_cost(self):
+        self.price(9500)
+        self.broker.market_buy_bound=lambda symbol,price:price*D('1.3')
+        self.assertTrue(self.engine.cycle())
+        sale,buy=self.broker.orders
+        self.assertLessEqual(buy[2]*buy[3]*D('1.01'),sale[2]*sale[3])
+
+    def test_transient_query_before_order_recovers_without_user(self):
+        original=self.broker.verify_account;calls=[]
+        def verify(account):
+            calls.append(1)
+            if len(calls)==1:raise __import__('core').ApiFailure('일시적 서버 오류')
+            return original(account)
+        self.broker.verify_account=verify
+        waits=[]
+        def wait(seconds):
+            waits.append(seconds)
+            if seconds==30:return False
+            self.engine.stop.set();return True
+        with patch.object(self.engine.stop,'wait',side_effect=wait):self.engine.run()
+        stages=[p['stage'] for e,p in self.events if e=='audit']
+        self.assertIn('QUERY_PAUSED',stages);self.assertIn('WAITING',stages)
+        self.assertNotIn('HALTED',stages);self.assertFalse(self.broker.orders);self.assertIn(30,waits)
+
+    def test_equal_returns_do_not_trade_even_when_b_falls(self):
+        for symbol in self.broker.hs:self.broker.hs[symbol]=replace(self.broker.hs[symbol],current=D(9000))
+        self.assertFalse(self.engine.cycle());self.assertFalse(self.broker.orders)
+
+    def test_reentry_requires_below_then_recross_and_persists_restart(self):
+        self.price(9000);self.assertTrue(self.engine.cycle())
+        h=self.broker.hs['000660'];self.price(h.average*D('.90'))
+        self.assertFalse(self.engine.cycle());self.assertEqual(len(self.broker.orders),2)
+        self.engine=Engine(self.broker,config(),Journal(self.path),self.broker.account,lambda:True,lambda *a:None)
+        self.assertFalse(self.engine.cycle())
+        self.price(h.average);self.assertFalse(self.engine.cycle())
+        self.price(h.average*D('.95'));self.assertTrue(self.engine.cycle())
+        self.assertEqual([o[2] for o in self.broker.orders if o[0]=='매도'],[10,10])
+
+    def test_daily_lots_round_half_up_and_restart_does_not_recompute(self):
+        h=self.broker.hs['005930'];self.broker.hs[h.code]=replace(h,qty=45,available=45,cost=450000)
+        self.assertFalse(self.engine.cycle())
+        lots=self.journal.lots(datetime.now(KST).strftime('%Y%m%d'),self.broker.account,config(),self.broker.hs)
+        self.assertEqual(lots['lots']['005930'],5)
+        self.engine.config=replace(config(),a_sell_percent=D(20))
+        self.assertFalse(self.engine.cycle())
+        again=Journal(self.path).lots(datetime.now(KST).strftime('%Y%m%d'),self.broker.account,self.engine.config,self.broker.hs)
+        self.assertEqual(again['lots']['005930'],5)
+
+    def test_external_inventory_changes_block_orders(self):
+        self.engine.cycle();self.broker.hs['005930']=replace(self.broker.hs['005930'],qty=99)
+        with self.assertRaises(Halt):self.engine.cycle()
+        self.assertFalse(self.broker.orders)
+
+    def test_quantity_shortage_waits_without_shrinking_order(self):
+        self.engine.cycle();self.broker.hs['005930']=replace(self.broker.hs['005930'],current=D(10500),available=3)
+        self.assertFalse(self.engine.cycle());self.assertFalse(self.broker.orders)
+
+    def test_partial_fill_blocks_followup_and_retains_active_cycle(self):
+        self.price(9500);self.broker.partial=True
+        with self.assertRaises(Halt):self.engine.cycle()
+        self.assertEqual(len(self.broker.orders),1);self.assertTrue(self.journal.active())
+        self.assertFalse(self.journal.gap_armed(self.broker.account,'005930','000660'))
+
+    def test_both_fills_required_before_inventory_commit(self):
+        self.price(9500)
+        original=self.broker.order
+        def order(side,*args):
+            if side=='매수':raise Halt('매수 접수 불명')
+            return original(side,*args)
+        self.broker.order=order
+        with self.assertRaises(Halt):self.engine.cycle()
+        self.assertTrue(self.journal.active());self.assertFalse(self.journal.gap_armed(self.broker.account,'005930','000660'))
+
+    def test_gap_exact_threshold_both_signs(self):
+        hs=holdings();hs['000660']=replace(hs['000660'],current=D(9500))
+        self.assertEqual(gap_snapshot(config(),hs)['direction'],'A_TO_B')
+        hs['000660']=replace(hs['000660'],current=D(10500))
+        self.assertEqual(gap_snapshot(config(),hs)['direction'],'B_TO_A')
+
+
 
 class MathTests(unittest.TestCase):
     def test_limit_bounds(self):
@@ -254,20 +235,15 @@ class MathTests(unittest.TestCase):
         for cap in (1000000,1000000000):
             replace(config(),cap=cap).validate()
 
-    def test_signal_exact_thresholds(self):
-        cfg=config()
-        self.assertEqual(signal(cfg,{'reference':'10500','mode':'BUY'},D(9975)),'BUY')
-        self.assertIsNone(signal(cfg,{'reference':'10500','mode':'BUY'},D(9976)))
-        self.assertEqual(signal(cfg,{'reference':'9975','mode':'SELL'},D('10473.75')),'SELL')
-
     def test_buy_budgets(self):
         self.assertEqual(buy_qty(D(9000),400000,999999,999999,D(1)),44)
         self.assertEqual(buy_qty(D(9000),999999,400000,999999,D(1)),44)
         self.assertEqual(buy_qty(D(9000),999999,999999,400000,D(1)),44)
 
     def test_fraction_rounding_and_available(self):
-        self.assertEqual(sale_qty(replace(holdings()['005930'],available=3),D(10)),3)
-        self.assertEqual(sale_qty(replace(holdings()['000660'],qty=19,available=19),D(5)),0)
+        self.assertEqual(sale_qty(replace(holdings()['005930'],available=3),D(10)),0)
+        self.assertEqual(rounded_lot(45,D(10)),5)
+        self.assertEqual(rounded_lot(4,D(10)),0)
 
     def test_nonfinite_values_blocked(self):
         for value in ('NaN','Infinity',''):
@@ -325,8 +301,8 @@ class AdapterTests(unittest.TestCase):
         url, kwargs = session.calls[0]
         self.assertEqual(url, 'https://api.kiwoom.com/api/dostk/ordr')
         self.assertFalse(kwargs['allow_redirects'])
-        self.assertEqual(kwargs['json']['trde_tp'],'0')
-        self.assertEqual(kwargs['json']['ord_uv'],'9000')
+        self.assertEqual(kwargs['json']['trde_tp'],'3')
+        self.assertEqual(kwargs['json']['ord_uv'],'')
 
     def test_error_response_does_not_echo_secrets(self):
         api, _ = self.adapter([Response({'return_code':1,'return_msg':'secret-value'})])
@@ -362,3 +338,20 @@ class AdapterTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class MarketOrderWireTests(unittest.TestCase):
+    def broker(self,responses):
+        return AdapterTests.adapter(self,responses)[0]
+
+    def test_sell_market_payload_has_no_limit_price(self):
+        broker=self.broker([Response({'return_code':0,'ord_no':'123'})])
+        broker.order('매도','005930',4,D(10000))
+        body=broker.session.calls[0][1]['json']
+        self.assertEqual(body['trde_tp'],'3');self.assertEqual(body['ord_uv'],'')
+    def test_market_budget_uses_confirmed_upper_limit(self):
+        broker=self.broker([Response({'return_code':0,'stk_cd':'005930','stk_nm':'A종목','cur_prc':'10000','upl_pric':'13000'})])
+        price=broker.quote('005930','A종목')
+        self.assertEqual(broker.market_buy_bound('005930',price),D(13000))
+    def test_missing_upper_limit_blocks_market_budget(self):
+        broker=self.broker([])
+        with self.assertRaises(Halt):broker.market_buy_bound('005930',D(10000))

@@ -2,16 +2,18 @@
 import json
 
 LABELS = {
+    'gap':'수익률 갭(%p)','gap_percent':'갭 기준(%p)','a_return':'A 보유 수익률(%)','b_return':'B 보유 수익률(%)',
+    'armed':'갭 재진입 허용','daily_lots':'당일 기준수량과 고정주수','reference_price':'시장가 수량산정 참고가','order_type':'주문 방식',
     'account_cash':'100% 현금·D+2 기준 계좌 현금','target_100_percent_capacity':'매수 대상 종목별 100% 주문가능 한도',
     'query_status':'체결조회 상태',
     'quote_snapshots':'시세 조회값/수신 시각','received_at':'시세 수신 시각',
     'post_holdings':'거래 후 보유 상태','average_cost':'매도 종목 평균 매입가',
     'estimated_profit_before_costs':'원가비례 예상 매도손익(수수료·세금 차감 전)',
     'orders':'첫 매도 / 후속 매수 주문 상태','config_snapshot':'신호 시점 설정 사본','strategy_revision':'전략 로직 식별자',
-    'cycle_id':'사이클 번호','state':'B 기준/방향','reference':'기준가','mode':'대기 방향',
+    'cycle_id':'사이클 번호','state':'수익률 갭/재진입/당일 고정주수','reference':'기준가','mode':'대기 방향',
     'basis_source':'기준 출처','source':'매도 종목/기준 출처','target':'매수 종목',
     'b_current':'판단 당시 B 현재가','b_average':'B 평균 매입가','threshold':'신호 목표가',
-    'comparison':'비교 조건','trigger_percent':'신호 비율(%)','action':'B 거래 방향',
+    'comparison':'비교 조건','trigger_percent':'신호 비율(%)','action':'종목 간 매매 방향',
     'cap':'합산 원금 한도','total_cost':'A+B 합산 매입원금','daily_max':'일일 한도',
     'daily_count':'당일 예약 횟수','held':'보유수량','available':'매도가능수량',
     'percent':'매도수량 비율(%)','raw_qty':'버림 전 수량','qty':'주문수량',

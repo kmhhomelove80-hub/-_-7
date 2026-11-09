@@ -9,9 +9,9 @@ import sys
 import threading
 import time
 from xml.etree import ElementTree as ET
-from core import Halt, KST
+from core import Halt, KST, ApiFailure
 
-DEFAULT_SCHEDULE={'enabled':False,'trade_notifications':False,'consent':'','blocked':'','paused_day':'',
+DEFAULT_SCHEDULE={'enabled':False,'suspended':False,'trade_notifications':False,'consent':'','blocked':'','paused_day':'',
                   'attempt_day':'','preflight_day':'','finished_day':'','process_open':False,'alert_key':''}
 TASK_NAME='KiwoomWebTrader.Session'
 
@@ -84,7 +84,7 @@ class SessionScheduler:
     def __init__(self,controller,calendar,now=None,auto_exit=False):
         self.c=controller;self.calendar=calendar;self.now=now or (lambda:datetime.now(KST))
         self.auto_exit=auto_exit;self.ending=False;self.closed_at=None;self.stop=threading.Event();self.thread=None
-        self.last_heartbeat=0
+        self.last_heartbeat=0;self.retry_at=0
     def launch(self):
         if self.c.demo:return
         self.thread=threading.Thread(target=self.run,daemon=True);self.thread.start()
@@ -99,7 +99,12 @@ class SessionScheduler:
                 try:
                     with self.c.operation:self.tick()
                 except Exception as exc:
-                    if self.c.schedule['paused_day']!=self.now().strftime('%Y%m%d'):
+                    safe=isinstance(exc,ApiFailure) and exc.outcome=='QUERY_FAILED' and (exc.error_code is None or str(exc.error_code) in ('429','500','502','503','504')) and not self.c.journal.active() and not self.c.running()
+                    if safe:
+                        self.c.schedule.update(attempt_day='',preflight_day='');self.c.persist_schedule();self.retry_at=time.monotonic()+30
+                        self.c.schedule_status='조회 장애 · 주문 없이 30초 후 자동 재점검'
+                        self.c.event('notice',{'subject':'조회 장애 · 자동복구 대기','body':str(exc)+'\n원인: 읽기 조회 응답 실패. 주문 전송 없음.\n조치: 30초 후 자동 재점검. 지속되면 PC 네트워크와 API 연결을 확인하세요.'})
+                    elif self.c.schedule['paused_day']!=self.now().strftime('%Y%m%d'):
                         self.c.schedule_issue('예약 운영 오류: '+(str(exc) if isinstance(exc,Halt) else type(exc).__name__))
                 self.stop.wait(5)
         finally:
@@ -109,6 +114,7 @@ class SessionScheduler:
     def tick(self):
         c=self.c;now=self.now();day=now.strftime('%Y%m%d');s=c.schedule
         if not s['enabled'] or c.demo:return
+        if time.monotonic()<self.retry_at:return
         if time.monotonic()-self.last_heartbeat>=30:
             c.persist_schedule();self.last_heartbeat=time.monotonic()
         session=self.calendar.session(now)
@@ -144,6 +150,8 @@ class SessionScheduler:
             # Engine uses the same calendar cutoff; stop idle loop without an alert.
             if c.running():c.stop(scheduled=True)
             return
+        if s['suspended']:
+            c.schedule_status='사용자 중단 · 재승인 전까지 자동 시작 안 함';return
         if s['blocked']:
             c.schedule_status='자동 시작 차단 · '+s['blocked'];return
         if s['paused_day']==day:
@@ -170,6 +178,6 @@ class SessionScheduler:
         if not result['can_start']:
             c.schedule_issue('자동 시작 점검 차단: '+' / '.join(result['blockers']));return
         # User approval is persisted against the exact config+account fingerprint.
-        if s['paused_day']==day or not s['enabled'] or s['blocked']:return
+        if s['suspended'] or s['paused_day']==day or not s['enabled'] or s['blocked']:return
         c.start({'inspection_id':result['id'],'live_confirmed':True,'preview_confirmed':True},scheduled=True)
         c.log('저장된 예약 동의와 최신 점검 결과로 자동매매 시작')

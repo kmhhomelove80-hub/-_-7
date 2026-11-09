@@ -9,15 +9,15 @@ import json
 import threading
 import time
 import secrets
-from core import Config, Rule, D, Halt, ApiFailure, Journal, Engine, KST, code, signal, sale_qty, buy_qty, pending_details
+from core import Config, Rule, D, Halt, ApiFailure, Journal, Engine, KST, code, gap_snapshot, planned_qty, buy_qty, pending_details
 from broker import Kiwoom, MarketClock
 from monitor import AccountMonitor
 from notifications import TelegramSettings, MailSettings, TelegramNotifier, EmailNotifier, private_chat_ids
 from diagnostics import trade_history
 from scheduling import load_schedule, atomic_json, WindowsTask
 
-DEFAULT_CONFIG={'a_code':'','a_name':'','b_code':'','b_name':'','drop':'5','rise':'5','a_sell':'10','b_sell':'5',
-                'cap':'1000000','daily':'10','reserve':'1','poll':'3','initial_price':'0','initial_mode':'BOTH'}
+DEFAULT_CONFIG={'revision':'average-gap-market-v2','a_code':'','a_name':'','b_code':'','b_name':'','gap':'5',
+                'quantity_mode':'DAILY_FIXED','a_sell':'10','b_sell':'10','cap':'1000000','daily':'1000','reserve':'1','poll':'3'}
 
 
 def parse_config(data):
@@ -25,13 +25,11 @@ def parse_config(data):
         get=lambda k:str(data[k]).strip()
         cfg=Config((Rule(get('a_code'),get('a_name')),Rule(get('b_code'),get('b_name'))),
             int(get('cap').replace(',','')),int(get('daily')),D(get('reserve')),int(get('poll')),
-            D(get('drop')),D(get('rise')),D(get('a_sell')),D(get('b_sell')),D(get('initial_price')),get('initial_mode').upper())
-        cfg.validate()
-        return cfg
-    except Halt:
-        raise
-    except Exception:
-        raise Halt('전략 숫자와 필수 항목을 확인하세요.') from None
+            D(get('gap')),get('quantity_mode'),D(get('a_sell')),D(get('b_sell')))
+        cfg.validate();return cfg
+    except Halt:raise
+    except Exception:raise Halt('전략 숫자와 필수 항목을 확인하세요.') from None
+
 
 
 class WindowsVault:
@@ -106,7 +104,7 @@ def stop_card(record,pending):
         card['remedies']=['예약된 시도 횟수와 설정 한도를 확인하세요. 실패 시도도 횟수에 포함됩니다.']
     elif '시간 밖' in reason:
         card['title']='거래시간 종료 / 거래시간 밖'
-        card['remedies']=['허용 거래시간에 기준가와 잔고를 점검한 후 시작하세요.']
+        card['remedies']=['허용 거래시간에 평균 매입가와 잔고를 점검한 후 시작하세요.']
     elif d.get('order_outcome')=='UNKNOWN':
         card['title']='주문 접수 여부 불명 · 중지'
         card['remedies']=['실제 주문이 접수됐을 수 있습니다. 영웅문 주문·체결을 확인하세요.','같은 주문을 수동으로 중복 제출하지 마세요.']
@@ -114,7 +112,7 @@ def stop_card(record,pending):
         card['title']='매도 후 후속 매수 미완료 · 중지'
         card['remedies']=['매수 주문 전송 여부와 부분체결 여부를 확인하세요.','확보 현금과 부족 조건을 진단에서 확인하세요.','기록 해제 후 시작하면 자금 공급 종목을 다시 매도할 수 있습니다.']
     elif '60초' in reason and '체결' in reason:
-        card['title']='체결 확인 시간 초과 · 중지'
+        card['title']='시장가 체결 확인 시간 초과 · 중지'
         card['remedies']=['영웅문에서 실제 체결수량과 남은 주문을 대조하세요.','자동 취소나 재주문은 실행하지 않았습니다. 잔량 처리 후 다시 점검하세요.']
     elif d.get('api') and d.get('api') not in ('kt10000','kt10001') and d.get('order_outcome')!='NOT_SENT':
         card['title']='주문 후 조회 실패 · 체결 대조 필요'
@@ -122,6 +120,10 @@ def stop_card(record,pending):
     elif d.get('api') and d.get('order_outcome')=='NOT_SENT':
         card['title']='계좌/시세 조회 실패 · 중지'
         card['remedies']=['API 연결과 마지막 조회 시각을 확인하세요.','조회 오류 설명과 연결 상태를 확인하고, 복구 후 다시 점검하세요.']
+    card['cause']='확인된 중단 조건: '+reason
+    if d.get('order_outcome')=='UNKNOWN':card['cause']='통신/응답 오류로 실제 주문 접수 여부를 확정할 수 없습니다.'
+    elif '미체결' in reason:card['cause']='조회 시점에 미체결 잔량이 있습니다. 거래정지·호가 부족 등 구체적 원인은 증권사 확인이 필요합니다.'
+    elif '조회' in reason:card['cause']='조회가 실패했거나 필요한 값이 반영되지 않았습니다. 장애·반영 지연 여부는 확정하지 않았습니다.'
     return card
 
 
@@ -137,7 +139,8 @@ class Controller:
         if self.config_path.exists():
             try:
                 old=json.loads(self.config_path.read_text(encoding='utf-8'))
-                self.config.update({k:str(v) for k,v in old.items() if k in DEFAULT_CONFIG})
+                self.config.update({k:str(v) for k,v in old.items() if k in DEFAULT_CONFIG and k!='revision' and (old.get('revision')==DEFAULT_CONFIG['revision'] or k not in ('a_sell','b_sell'))})
+                self.config['revision']=DEFAULT_CONFIG['revision']
                 if int(self.config['cap'].replace(',',''))<1000000:self.config['cap']='1000000'
             except Exception:config_warning=True
         self.engine=None;self.trade_thread=None;self.preparing=False;self.active_stop=threading.Event();self.monitor_thread=None;self.monitor_stop=threading.Event()
@@ -147,9 +150,9 @@ class Controller:
             from scheduling import DEFAULT_SCHEDULE
             self.schedule=dict(DEFAULT_SCHEDULE);config_warning=True
         self.schedule_status='예약 꺼짐';self.shutdown_requested=False;self.scheduler=None;self.scheduled_stop=False
-        self.monitor_generation=0;self.inspection=None;self.last_phase=''
+        self.monitor_generation=0;self.inspection=None;self.last_phase='';self.notice_keys=set()
         self.state={'mode':'IDLE','mode_label':'중지 · 시작 전 점검 필요','query':'미연결','balance':None,
-            'pending':[],'stop_card':None,'logs':[],'audit':None,'strategy':'기준가 확인 전',
+            'pending':[],'stop_card':None,'logs':[],'audit':None,'strategy':'A/B 평균 매입가 대비 수익률 갭 확인 전','gap':None,
             'wait':None,'feasibility':{},'notification':{},'inspection':None}
         self.telegram=TelegramNotifier(TelegramSettings(),lambda message:self.notice_status('telegram',message))
         self.email=EmailNotifier(MailSettings(),lambda message:self.notice_status('email',message))
@@ -190,13 +193,13 @@ class Controller:
                 self.state['query']='조회 실패 · 이전 값';self.log(payload)
                 self.balance_failures=getattr(self,'balance_failures',0)+1
                 if self.balance_failures>=3 and self.schedule['enabled'] and self.running():
-                    self.active_stop.set()
-                    self.schedule_issue('계좌 조회가 3회 연속 실패했습니다. 새 주문을 보류했습니다. API 연결을 확인하고 다시 승인하세요.')
+                    self.event('notice',{'subject':'잔고 조회 장애 · 자동복구 대기','body':'잔고 표시용 조회가 3회 이상 연속 실패했습니다. 원인: 조회 응답 실패, 세부 원인 미확정. 화면의 이전 잔고를 거래 판단에 사용하지 않습니다. 매매 엔진은 별도 최신 계좌 조회와 체결 확인을 통과해야 주문합니다. 조회 연결 복구를 계속 시도하며 지속되면 API·네트워크를 확인하세요.'})
             elif event=='pending':self.state['pending']=payload
             elif event=='strategy':self.state['strategy']=payload
+            elif event=='gap':self.state['gap']=payload
             elif event=='feasibility':self.state['feasibility']=payload
             elif event=='trade_wait':
-                self.state.update(mode='WAITING',mode_label='실행 중 · 정상 대기',wait=payload)
+                self.state.update(mode='RETRYING' if payload.get('query_paused') else 'WAITING',mode_label=payload.get('reason') if payload.get('query_paused') else '실행 중 · 정상 대기',wait=payload)
             elif event=='trade_phase':
                 self.last_phase=payload['stage']
                 if payload['stage'] not in ('WAITING','HALTED'):
@@ -210,6 +213,8 @@ class Controller:
                 elif payload['actor']=='trade':self.state.update(mode='RUNNING',mode_label='실행 중 · 조회 복구')
             elif event=='audit':
                 self.state['audit']=payload
+                if payload['stage']=='QUERY_PAUSED':
+                    self.state.update(mode='RETRYING',mode_label='조회 오류 · 주문 전송 없이 자동복구 대기')
                 if payload['stage']=='HALTED':
                     prior_card=self.state['stop_card']
                     card=stop_card(payload,self.state['pending'])
@@ -228,16 +233,21 @@ class Controller:
                 if payload['stage']=='PENDING_ORDERS':self.state['pending']=payload['data']['pending_orders']
             elif event=='notice':
                 title=payload['subject']
+                if any(word in title for word in ('보류','갭 계산','자동복구 대기')):
+                    key=(datetime.now(KST).strftime('%Y%m%d'),title.split('] ',1)[-1],payload['body'])
+                    if key in self.notice_keys:return
+                    self.notice_keys.add(key)
+                    payload=dict(payload,body=payload['body']+'\n조치: 주문 보류 후 조건 자동 재평가. 동일 조건은 당일 한 번 알립니다.')
                 if '중지 / 확인 필요' in title:
                     if self.schedule['blocked'] and self.schedule['alert_key']==self.schedule['blocked'] and '사용자 중지' in payload['body']:return
                     if not self.schedule.get('blocked') and (self.scheduled_stop or '시간 밖' in payload['body'] or '실행 횟수' in payload['body'] or '사용자 중지' in payload['body'] and self.schedule['paused_day']==datetime.now(KST).strftime('%Y%m%d')) and not self.journal.active():return
                     if self.schedule['enabled']:
                         self.schedule['alert_key']=self.schedule['blocked'];self.persist_schedule()
-                elif any(t in title for t in ('자동매매 시작','자동매매 종료','순환매 신호 발생','순환매 완료',' 체결 ')) and not self.schedule['trade_notifications']:return
+                elif any(t in title for t in ('자동매매 시작','자동매매 종료','순환매 신호 발생','순환매 완료',' 체결 ','주문 접수')) and not self.schedule['trade_notifications']:return
                 body=payload['body']
                 if '중지 / 확인 필요' in payload['subject'] and self.state['stop_card']:
                     card=self.state['stop_card']
-                    body+='\n대응 방법: '+ ' / '.join(card['remedies'])+'\n재개 조건: '+card['resume']
+                    body+='\n원인: '+card['cause']+'\n대응 방법: '+ ' / '.join(card['remedies'])+'\n재개 조건: '+card['resume']
                 self.telegram.notify(payload['subject'],body);self.email.notify(payload['subject'],body)
             elif event=='stopped':
                 if self.state['mode'] not in ('HALTED','USER_STOPPED','BLOCKED','SESSION_ENDED'):
@@ -245,7 +255,7 @@ class Controller:
     def snapshot(self):
         with self.lock:
             state=copy.deepcopy(self.state)
-        state['schedule']={k:self.schedule[k] for k in ('enabled','trade_notifications','blocked','paused_day','attempt_day','finished_day')}
+        state['schedule']={k:self.schedule[k] for k in ('enabled','trade_notifications','blocked','paused_day','attempt_day','finished_day','suspended')}
         state['schedule']['status']=self.schedule_status
         state['config']=copy.deepcopy(self.config)
         state['demo']=self.demo;state['running']=self.running()
@@ -314,10 +324,12 @@ class Controller:
                 if rule.code in hs:hs[rule.code]=__import__('dataclasses').replace(hs[rule.code],current=price)
                 else:hs[rule.code]=__import__('core').Holding(rule.code,rule.name,0,0,D(0),price,0)
             pending=pending_details(broker.pending({r.code for r in cfg.rules}),self.journal.known_orders(account,datetime.now(KST).strftime('%Y%m%d')))
-            active=self.journal.active();stored=self.journal.state(account,cfg.rules[0].code,cfg.rules[1].code)
-            state=stored or {'reference':str(cfg.initial_price or hs[cfg.rules[1].code].average),'mode':cfg.initial_mode}
-            if D(state['reference'])<=0:raise Halt('첫 기준가를 입력하세요.')
-            action=signal(cfg,state,hs[cfg.rules[1].code].current)
+            active=self.journal.active()
+            state=gap_snapshot(cfg,hs)
+            state['armed']=self.journal.gap_armed(account,*[r.code for r in cfg.rules])
+            lots=self.journal.lots(datetime.now(KST).strftime('%Y%m%d'),account,cfg,hs)
+            state['daily_lots']=lots
+            action=state['direction'] if state['armed'] else None
             total=sum(h.cost for h in hs.values() if h.code in {r.code for r in cfg.rules})
             used=self.journal.count(datetime.now(KST).strftime('%Y%m%d'),account)
             market_open=self.clock_factory()()
@@ -326,24 +338,27 @@ class Controller:
             if active:blockers.append('미완료 기록이 있습니다. 영웅문 대조 후 별도로 해제하세요.')
             if total>cfg.cap:blockers.append('합산 매입원금 한도 초과')
             if used>=cfg.daily_max:blockers.append('일일 최대 횟수 도달')
+            previous=self.journal.inventory(account,*[r.code for r in cfg.rules])
+            if previous and any(previous[r.code]['qty']!=hs[r.code].qty or abs(D(previous[r.code]['average'])-hs[r.code].average)>1 for r in cfg.rules):blockers.append('기록과 다른 잔고 변경. 영웅문 대조 후 잔고 변경 확인을 실행하세요.')
             if not market_open and not allow_closed:blockers.append('허용 거래시간 밖')
             immediate='현재 가격에서 즉시 발생하는 신호 없음'
             if action:
-                source=hs[cfg.rules[0 if action=='BUY' else 1].code];target=hs[cfg.rules[1 if action=='BUY' else 0].code]
-                qty=sale_qty(source,cfg.a_sell_percent if action=='BUY' else cfg.b_sell_percent)
+                source=hs[cfg.rules[0 if action=='A_TO_B' else 1].code];target=hs[cfg.rules[1 if action=='A_TO_B' else 0].code]
+                qty=planned_qty(cfg,source,lots)
                 headroom=D(cfg.cap-total)+(D(source.cost)*qty/source.qty if source.qty else 0)
-                expected=buy_qty(target.current,source.current*qty,cash+source.current*qty,headroom,cfg.reserve_percent)
+                basis=broker.market_buy_bound(target.code,target.current)
+                expected=buy_qty(basis,source.current*qty,cash+source.current*qty,headroom,cfg.reserve_percent)
                 immediate=f'지금 시작하면 {source.name} {qty}주 매도 → {target.name} 약 {expected}주 매수 신호가 즉시 성립합니다.'
-                if qty<1 or expected<1:blockers.append('현재 신호의 예상 매도/매수수량이 1주 미만')
+                if qty<1 or expected<1:immediate+=' 수량/예산 조건 부족 시 주문 없이 자동 대기합니다.'
             identifier=secrets.token_urlsafe(24)
             result={'id':identifier,'at':datetime.now(KST).isoformat(),'state':state,'immediate':immediate,
                 'pending':pending,'active_ids':[r[0] for r in active],'blockers':blockers,'can_start':not blockers,
                 'cash':str(cash),'daily_count':used,'daily_max':cfg.daily_max,'total_cost':total,'holdings':{k:asdict(v) for k,v in hs.items()},'valid_seconds':30,
                 'config':copy.deepcopy(self.config),
-                'warning':'새 사이클 점검입니다. 과거 누락 매수를 복구하지 않습니다. 실제 주문 전 다시 조회합니다.'}
+                'warning':'시장가: 표시 가격은 체결가 보장이 아닙니다. 당일 고정수량은 최초 실행 시 확정됩니다. 새 사이클 점검입니다. 과거 누락 매수를 복구하지 않습니다. 실제 주문 전 다시 조회합니다.'}
             self.inspection={'result':result,'created':time.monotonic(),'fingerprint':self.fingerprint(),'account':account}
             with self.lock:
-                self.state['inspection']=result;self.state['pending']=pending
+                self.state['inspection']=result;self.state['pending']=pending;self.state['gap']=state
                 if not blockers:
                     self.state.update(mode='READY',mode_label='점검 통과 · 사용자 시작 대기')
                     if self.state['stop_card']:self.state['stop_card']['resume']='새 점검에서 현재 차단 사유 없음. 사용자 시작 확인을 기다립니다.'
@@ -362,7 +377,7 @@ class Controller:
         self.mutation_allowed()
         with self.lock:
             if self.running():raise Halt('이미 실행/준비 중입니다.')
-            if scheduled and (not self.schedule['enabled'] or self.schedule['blocked'] or self.schedule['paused_day']==datetime.now(KST).strftime('%Y%m%d') or self.schedule['consent']!=self.fingerprint()):raise Halt('예약 중지 또는 승인 상태 변경으로 자동 시작을 취소했습니다.')
+            if scheduled and (not self.schedule['enabled'] or self.schedule['blocked'] or self.schedule['suspended'] or self.schedule['paused_day']==datetime.now(KST).strftime('%Y%m%d') or self.schedule['consent']!=self.fingerprint()):raise Halt('예약 중지 또는 승인 상태 변경으로 자동 시작을 취소했습니다.')
             item=self.require_inspection(data.get('inspection_id'))
             if data.get('live_confirmed') is not True or data.get('preview_confirmed') is not True:raise Halt('실전 주문 및 점검 내용을 확인해야 합니다.')
             if not item['result']['can_start']:raise Halt('재개 점검의 차단 사유를 먼저 해결하세요.')
@@ -396,7 +411,7 @@ class Controller:
     def stop(self,scheduled=False):
         self.scheduled_stop=scheduled
         if not scheduled and self.schedule['enabled']:
-            self.schedule['paused_day']=datetime.now(KST).strftime('%Y%m%d');self.persist_schedule()
+            self.schedule['suspended']=True;self.schedule['paused_day']=datetime.now(KST).strftime('%Y%m%d');self.persist_schedule()
         with self.lock:self.active_stop.set();self.inspection=None
         if self.engine:self.engine.request_stop()
         self.inspection=None
@@ -423,13 +438,20 @@ class Controller:
             self.log('미완료 차단 기록 해제. 누락 매수 복구/자동 시작은 실행하지 않았습니다.')
             self.inspection=None;self.state['inspection']=None
         finally:broker.session.close()
-    def reset(self,data):
+    def acknowledge_inventory(self,data):
         self.mutation_allowed()
         if self.running():raise Halt('자동매매를 먼저 중지하세요.')
         item=self.require_inspection(data.get('inspection_id'))
-        if data.get('confirmation')!='RESET_CONFIRMED' or item['result']['pending'] or item['result']['active_ids']:raise Halt('미체결/미완료 해소와 기준 초기화 확인이 필요합니다.')
-        cfg=parse_config(self.config);self.journal.reset_state(item['account'],cfg.rules[0].code,cfg.rules[1].code)
-        self.inspection=None;self.state['inspection']=None
+        if data.get('confirmation')!='INVENTORY_CHECKED' or item['result']['pending'] or item['result']['active_ids']:raise Halt('영웅문 대조와 미체결·미완료 해소가 필요합니다.')
+        cfg=parse_config(self.config);broker,account=self.broker()
+        try:
+            broker.verify_account(account)
+            if account!=item['account'] or broker.pending({r.code for r in cfg.rules}) or self.journal.active():raise Halt('최신 미체결·미완료 또는 계좌가 점검 당시와 다릅니다.')
+            self.journal.clear_inventory(account,*[r.code for r in cfg.rules])
+            self.journal.event('사용자가 영웅문 대조 후 잔고 변경 확인. 고정주수·재진입 대기·일일 횟수 유지.')
+            self.inspection=None;self.state['inspection']=None
+            self.log('잔고 변경 대조 확인. 당일 고정주수·갭 재진입 대기·일일 횟수는 유지합니다.')
+        finally:broker.session.close()
     def lookup(self,data):
         self.mutation_allowed();broker,account=self.broker()
         try:broker.verify_account(account);return broker.stock_info(code(data.get('code','')))
@@ -449,10 +471,10 @@ class Controller:
         self.vault.set(channel,settings.to_dict());notifier=self.telegram if channel=='telegram' else self.email;notifier.configure(settings)
         if data.get('test'):notifier.notify('웹 버전 테스트 알림','실제 거래 주문은 실행하지 않았습니다.',force=True)
     def seed_demo(self):
-        self.config.update(a_code='005930',a_name='예시 자금 종목',b_code='000660',b_name='예시 매매 종목')
+        self.config.update(a_code='005930',a_name='예시 A 종목',b_code='000660',b_name='예시 B 종목')
         now=time.monotonic()
         self.state.update(mode='HALTED',mode_label='데모 · 미체결 주문 발견',query='데모 데이터',
-            strategy='B 기준 10,500원 · BUY 대기 · 매수 ≤ 9,975원',
+            strategy='A 수익률 +2% / B 수익률 −2% / 갭 4%p / 기준 5%p',
             pending=[{'order':'DEMO-01','symbol':'005930','name':'예시 자금 종목','side':'매도','ordered':'10','filled':'4','remaining':'6','price':'10000','time':'10:30:00','origin':'외부 주문 또는 출처 확인 불가'}],
             balance={'positions':[{'code':'005930','name':'예시 자금 종목','kind':'현금','qty':100,'available':94,'average':'10000','current':'10200','cost':1000000,'value':1020000,'profit':'20000','profit_rate':'2'},
                                   {'code':'000660','name':'예시 매매 종목','kind':'현금','qty':50,'available':50,'average':'10000','current':'9800','cost':500000,'value':490000,'profit':'-10000','profit_rate':'-2'}],
@@ -478,7 +500,7 @@ class Controller:
             self.state.update(stop_card=card,mode='BLOCKED',mode_label='예약 운영 확인 필요')
             if notify and self.schedule['alert_key']!=reason:
                 self.schedule['alert_key']=reason;self.persist_schedule()
-                body=reason+'\n조치: 자동 시작 차단. 주문 취소·재전송 없음.\n대응: 영웅문 주문·체결·잔고 대조 및 연결 확인 후 예약 설정에서 다시 승인하세요.'
+                body=reason+'\n원인: '+card['cause']+'\n조치: 자동 시작 차단. 주문 취소·재전송 없음.\n대응: 영웅문 주문·체결·잔고 대조 및 연결 확인 후 예약 설정에서 다시 승인하세요.'
                 self.telegram.notify('예약 자동매매 확인 필요',body);self.email.notify('예약 자동매매 확인 필요',body)
     def configure_schedule(self,data,task=None):
         self.mutation_allowed()
@@ -496,7 +518,7 @@ class Controller:
         with self.lock:
             self.schedule.update(enabled=enabled,trade_notifications=data.get('trade_notifications',False))
             if enabled:
-                self.schedule.update(consent=fingerprint,blocked='',paused_day='',attempt_day='',preflight_day='',finished_day='',alert_key='',process_open=bool(self.scheduler))
+                self.schedule.update(consent=fingerprint,suspended=False,blocked='',paused_day='',attempt_day='',preflight_day='',finished_day='',alert_key='',process_open=bool(self.scheduler))
             self.persist_schedule();self.inspection=None
             self.schedule_status='예약 승인됨 · 거래일·계좌 점검 대기' if enabled else '예약 꺼짐'
             if enabled:self.state.update(mode='SCHEDULED_WAIT',mode_label='예약 승인됨 · 거래일 점검 대기',stop_card=None)

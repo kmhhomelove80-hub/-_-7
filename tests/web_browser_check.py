@@ -38,7 +38,10 @@ def main():
                 assert page.locator('#pending-body').inner_text().find('DEMO-01')>=0
                 assert page.locator('#pending-body').inner_text().find('외부 주문')>=0
                 page.locator('nav [data-page="strategy"]').click()
-                assert page.locator('[name="drop"]').input_value()=='5'
+                assert page.locator('[name="gap"]').input_value()=='5'
+                assert page.locator('[name="quantity_mode"]').input_value()=='DAILY_FIXED'
+                assert page.locator('[name="initial_price"],[name="initial_mode"],[name="drop"],[name="rise"]').count()==0
+                page.screenshot(path='dist/strategy-preview.png',full_page=True)
                 page.locator('nav [data-page="schedule"]').click()
                 assert page.get_by_role('heading',name='예약 자동 운영',exact=True,level=2).is_visible()
                 assert not page.locator('#schedule-form button').is_enabled()
@@ -78,6 +81,8 @@ def main():
                     page.locator('#confirm-start').click()
                     page.locator('#inspection-dialog').wait_for(state='hidden')
                     expect(page.locator('#mode-label')).to_contain_text('정상 대기',timeout=10000)
+                    expect(page.locator('#gap-summary')).to_contain_text('갭')
+                    assert fake_controller.state['gap']['daily_lots']['lots']=={'005930':10,'000660':10}
                     page.locator('#stop').click()
                     expect(page.locator('#mode-label')).to_contain_text('중지',timeout=10000)
                     if fake_controller.trade_thread:fake_controller.trade_thread.join(3)

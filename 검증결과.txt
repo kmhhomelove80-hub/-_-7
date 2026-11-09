@@ -34,6 +34,8 @@ test_real_calendar_holiday_and_year_refresh (test_scheduling.CalendarTests.test_
 See https://pandas.pydata.org/docs/dev/whatsnew/v3.1.0.html#whatsnew-310-deprecations-values for more details.
   warnings.warn(
 ok
+test_two_months_do_not_expire_or_require_daily_confirmation (test_scheduling.ContinuousOperationTests.test_two_months_do_not_expire_or_require_daily_confirmation) ... ok
+test_user_stop_remains_suspended_across_month_boundary (test_scheduling.ContinuousOperationTests.test_user_stop_remains_suspended_across_month_boundary) ... ok
 test_approval_requires_explicit_boolean_and_notification_channel (test_scheduling.SchedulerTests.test_approval_requires_explicit_boolean_and_notification_channel) ... ok
 test_changed_config_blocks_and_deduplicates_alert (test_scheduling.SchedulerTests.test_changed_config_blocks_and_deduplicates_alert) ... ok
 test_crash_marker_blocks_next_launch (test_scheduling.SchedulerTests.test_crash_marker_blocks_next_launch) ... ok
@@ -48,6 +50,7 @@ test_no_trade_notifications_by_default_but_errors_notify (test_scheduling.Schedu
 test_normal_daily_limit_preserves_normal_end_state (test_scheduling.SchedulerTests.test_normal_daily_limit_preserves_normal_end_state) ... ok
 test_preflight_failure_persists_and_never_restarts_next_day (test_scheduling.SchedulerTests.test_preflight_failure_persists_and_never_restarts_next_day) ... ok
 test_preopen_read_only_then_open_starts_once (test_scheduling.SchedulerTests.test_preopen_read_only_then_open_starts_once) ... ok
+test_preorder_transient_inspection_error_retries_without_blocking (test_scheduling.SchedulerTests.test_preorder_transient_inspection_error_retries_without_blocking) ... ok
 test_schedule_failure_signals_running_engine_to_stop (test_scheduling.SchedulerTests.test_schedule_failure_signals_running_engine_to_stop) ... ok
 test_stop_during_cycle_is_daily_pause_not_permanent_error (test_scheduling.SchedulerTests.test_stop_during_cycle_is_daily_pause_not_permanent_error) ... ok
 test_task_failure_does_not_claim_enabled (test_scheduling.SchedulerTests.test_task_failure_does_not_claim_enabled) ... ok
@@ -69,25 +72,28 @@ test_missing_schema_blocks (test_trader.AdapterTests.test_missing_schema_blocks)
 test_official_account_field (test_trader.AdapterTests.test_official_account_field) ... ok
 test_pagination_and_headers (test_trader.AdapterTests.test_pagination_and_headers) ... ok
 test_timeout_order_single_attempt (test_trader.AdapterTests.test_timeout_order_single_attempt) ... ok
+test_market_budget_uses_confirmed_upper_limit (test_trader.MarketOrderWireTests.test_market_budget_uses_confirmed_upper_limit) ... ok
+test_missing_upper_limit_blocks_market_budget (test_trader.MarketOrderWireTests.test_missing_upper_limit_blocks_market_budget) ... ok
+test_sell_market_payload_has_no_limit_price (test_trader.MarketOrderWireTests.test_sell_market_payload_has_no_limit_price) ... ok
 test_buy_budgets (test_trader.MathTests.test_buy_budgets) ... ok
 test_fraction_rounding_and_available (test_trader.MathTests.test_fraction_rounding_and_available) ... ok
 test_limit_bounds (test_trader.MathTests.test_limit_bounds) ... ok
 test_nonfinite_values_blocked (test_trader.MathTests.test_nonfinite_values_blocked) ... ok
-test_signal_exact_thresholds (test_trader.MathTests.test_signal_exact_thresholds) ... ok
 test_weighted_fills_deduplicated (test_trader.MathTests.test_weighted_fills_deduplicated) ... ok
-test_10500_sell_then_9975_buy_then_10473_75_sell (test_trader.StrategyTests.test_10500_sell_then_9975_buy_then_10473_75_sell) ... ok
-test_a_price_is_not_a_signal (test_trader.StrategyTests.test_a_price_is_not_a_signal) ... ok
-test_after_buy_further_drop_does_not_buy_again (test_trader.StrategyTests.test_after_buy_further_drop_does_not_buy_again) ... ok
-test_b_sell_reference_saved_even_if_a_buy_fails (test_trader.StrategyTests.test_b_sell_reference_saved_even_if_a_buy_fails) ... ok
+test_both_fills_required_before_inventory_commit (test_trader.StrategyTests.test_both_fills_required_before_inventory_commit) ... ok
 test_cap_prevents_orders (test_trader.StrategyTests.test_cap_prevents_orders) ... ok
-test_daily_limit_shared_both_directions (test_trader.StrategyTests.test_daily_limit_shared_both_directions) ... ok
-test_initial_custom_price_and_direction (test_trader.StrategyTests.test_initial_custom_price_and_direction) ... ok
-test_missing_a_inventory_does_not_impose_minimum_balance (test_trader.StrategyTests.test_missing_a_inventory_does_not_impose_minimum_balance) ... ok
-test_notice_events_cover_signal_orders_fills_and_completion (test_trader.StrategyTests.test_notice_events_cover_signal_orders_fills_and_completion) ... ok
-test_partial_sell_never_buys_or_changes_reference (test_trader.StrategyTests.test_partial_sell_never_buys_or_changes_reference) ... ok
-test_reset_preserves_daily_count_and_blocks_active_cycle (test_trader.StrategyTests.test_reset_preserves_daily_count_and_blocks_active_cycle) ... ok
-test_state_persists_across_restart_and_average_changes (test_trader.StrategyTests.test_state_persists_across_restart_and_average_changes) ... ok
+test_completed_average_down_below_threshold_rearms (test_trader.StrategyTests.test_completed_average_down_below_threshold_rearms) ... ok
+test_daily_lots_round_half_up_and_restart_does_not_recompute (test_trader.StrategyTests.test_daily_lots_round_half_up_and_restart_does_not_recompute) ... ok
+test_equal_returns_do_not_trade_even_when_b_falls (test_trader.StrategyTests.test_equal_returns_do_not_trade_even_when_b_falls) ... ok
+test_external_inventory_changes_block_orders (test_trader.StrategyTests.test_external_inventory_changes_block_orders) ... ok
+test_gap_exact_threshold_both_signs (test_trader.StrategyTests.test_gap_exact_threshold_both_signs) ... ok
+test_market_buy_budget_bounds_full_fill_cost (test_trader.StrategyTests.test_market_buy_budget_bounds_full_fill_cost) ... ok
+test_partial_fill_blocks_followup_and_retains_active_cycle (test_trader.StrategyTests.test_partial_fill_blocks_followup_and_retains_active_cycle) ... ok
+test_quantity_shortage_waits_without_shrinking_order (test_trader.StrategyTests.test_quantity_shortage_waits_without_shrinking_order) ... ok
+test_reentry_requires_below_then_recross_and_persists_restart (test_trader.StrategyTests.test_reentry_requires_below_then_recross_and_persists_restart) ... ok
 test_stop_during_account_check_blocks_send (test_trader.StrategyTests.test_stop_during_account_check_blocks_send) ... ok
+test_transient_query_before_order_recovers_without_user (test_trader.StrategyTests.test_transient_query_before_order_recovers_without_user) ... ok
+test_two_way_gap_trades_without_fixed_b_role (test_trader.StrategyTests.test_two_way_gap_trades_without_fixed_b_role) ... ok
 test_unknown_sell_blocked_after_restart (test_trader.StrategyTests.test_unknown_sell_blocked_after_restart) ... ok
 test_user_stop_and_market_closed_do_not_order (test_trader.StrategyTests.test_user_stop_and_market_closed_do_not_order) ... ok
 test_configuration_change_invalidates_preview (test_web_runtime.ControllerTests.test_configuration_change_invalidates_preview) ... ok
@@ -95,6 +101,8 @@ test_demo_forbids_real_mutations (test_web_runtime.ControllerTests.test_demo_for
 test_immediate_signal_is_explained_before_start (test_web_runtime.ControllerTests.test_immediate_signal_is_explained_before_start) ... ok
 test_incomplete_reconciliation_is_separate_and_never_places_orders (test_web_runtime.ControllerTests.test_incomplete_reconciliation_is_separate_and_never_places_orders) ... ok
 test_inspection_is_read_only_and_no_implicit_state_reset (test_web_runtime.ControllerTests.test_inspection_is_read_only_and_no_implicit_state_reset) ... ok
+test_legacy_reference_settings_not_imported_into_new_strategy (test_web_runtime.ControllerTests.test_legacy_reference_settings_not_imported_into_new_strategy) ... ok
+test_repeated_monitor_error_does_not_override_fresh_trade_checks (test_web_runtime.ControllerTests.test_repeated_monitor_error_does_not_override_fresh_trade_checks) ... ok
 test_snapshot_never_returns_credentials (test_web_runtime.ControllerTests.test_snapshot_never_returns_credentials) ... ok
 test_start_requires_fresh_preview_and_both_confirmations (test_web_runtime.ControllerTests.test_start_requires_fresh_preview_and_both_confirmations) ... ok
 test_stop_during_start_preparation_prevents_trading (test_web_runtime.ControllerTests.test_stop_during_start_preparation_prevents_trading) ... ok
@@ -115,6 +123,6 @@ test_static_security_headers_and_no_secret_in_html (test_web_security.LocalSecur
 test_unauthenticated_api_rejected (test_web_security.LocalSecurityTests.test_unauthenticated_api_rejected) ... ok
 
 ----------------------------------------------------------------------
-Ran 112 tests in 14.953s
+Ran 120 tests in 17.172s
 
 OK (skipped=1)

@@ -16,7 +16,7 @@ $report = Get-Content web-smoke-test.json -Raw | ConvertFrom-Json
 if ($report.status -ne 'ok') { throw 'Invalid web smoke report' }
 Copy-Item '웹버전_사용설명서.md' dist
 Copy-Item web-smoke-test.json dist
-Compress-Archive -Path dist\KiwoomWebTrader.exe, dist\웹버전_사용설명서.md, dist\web-smoke-test.json, dist\web-browser-report.json, dist\web-preview.png, dist\schedule-preview.png -DestinationPath dist\KiwoomWebTrader-Windows-x64.zip -Force
+Compress-Archive -Path dist\KiwoomWebTrader.exe, dist\웹버전_사용설명서.md, dist\web-smoke-test.json, dist\web-browser-report.json, dist\web-preview.png, dist\schedule-preview.png, dist\strategy-preview.png -DestinationPath dist\KiwoomWebTrader-Windows-x64.zip -Force
 Get-ChildItem dist -File | Where-Object { $_.Extension -in '.exe', '.zip' } | ForEach-Object {
     $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower()
     "$hash  $($_.Name)"
