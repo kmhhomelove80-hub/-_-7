@@ -103,6 +103,7 @@ test_incomplete_reconciliation_is_separate_and_never_places_orders (test_web_run
 test_inspection_is_read_only_and_no_implicit_state_reset (test_web_runtime.ControllerTests.test_inspection_is_read_only_and_no_implicit_state_reset) ... ok
 test_legacy_reference_settings_not_imported_into_new_strategy (test_web_runtime.ControllerTests.test_legacy_reference_settings_not_imported_into_new_strategy) ... ok
 test_repeated_monitor_error_does_not_override_fresh_trade_checks (test_web_runtime.ControllerTests.test_repeated_monitor_error_does_not_override_fresh_trade_checks) ... ok
+test_scheduled_halt_retains_order_outcome_and_trace (test_web_runtime.ControllerTests.test_scheduled_halt_retains_order_outcome_and_trace) ... ok
 test_snapshot_never_returns_credentials (test_web_runtime.ControllerTests.test_snapshot_never_returns_credentials) ... ok
 test_start_requires_fresh_preview_and_both_confirmations (test_web_runtime.ControllerTests.test_start_requires_fresh_preview_and_both_confirmations) ... ok
 test_stop_during_start_preparation_prevents_trading (test_web_runtime.ControllerTests.test_stop_during_start_preparation_prevents_trading) ... ok
@@ -123,6 +124,6 @@ test_static_security_headers_and_no_secret_in_html (test_web_security.LocalSecur
 test_unauthenticated_api_rejected (test_web_security.LocalSecurityTests.test_unauthenticated_api_rejected) ... ok
 
 ----------------------------------------------------------------------
-Ran 120 tests in 17.172s
+Ran 121 tests in 17.730s
 
 OK (skipped=1)

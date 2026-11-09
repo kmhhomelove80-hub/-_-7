@@ -487,6 +487,7 @@ class Controller:
     def schedule_issue(self,reason,notify=True):
         with self.lock:
             self.active_stop.set()
+            context=self.state.get('audit')
             changed=self.schedule['blocked']!=reason
             self.schedule['blocked']=reason;self.schedule_status='확인 필요 · 자동 시작 차단'
             if changed:
@@ -495,7 +496,8 @@ class Controller:
                 self.state['audit']=record
             self.persist_schedule()
             self.log(reason)
-            card=stop_card({'explanation':reason,'data':{}},self.state['pending'])
+            source=context if context and context.get('stage')=='HALTED' and context.get('explanation')==reason else {'explanation':reason,'data':{}}
+            card=stop_card(source,self.state['pending'])
             card['resume']='영웅문 대조와 문제 해결 후 예약 설정에서 다시 승인하세요. 자동 복구 주문은 없습니다.'
             self.state.update(stop_card=card,mode='BLOCKED',mode_label='예약 운영 확인 필요')
             if notify and self.schedule['alert_key']!=reason:

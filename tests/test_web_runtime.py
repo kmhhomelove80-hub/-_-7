@@ -117,6 +117,17 @@ class ControllerTests(unittest.TestCase):
             self.assertEqual(other.config['revision'],'average-gap-market-v2')
         finally:other.close();other.telegram.thread.join(1);other.email.thread.join(1)
 
+    def test_scheduled_halt_retains_order_outcome_and_trace(self):
+        self.c.schedule['enabled']=True
+        event={'stage':'HALTED','trace':'ORDER-TRACE','explanation':'주문 접수 응답 불명',
+               'data':{'orders':{'SELL':'FILLED','BUY':'UNKNOWN'},'order_outcome':'UNKNOWN','completed_legs':['SELL']}}
+        self.c.event('audit',event)
+        card=self.c.state['stop_card']
+        self.assertEqual(card['trace'],'ORDER-TRACE')
+        self.assertEqual(card['executed']['BUY'],'UNKNOWN')
+        self.assertEqual(card['completed'],['SELL'])
+        self.assertIn('접수 여부 불명',card['title'])
+
 
 class RetryTests(unittest.TestCase):
     def test_transient_read_retries_and_recovers(self):
