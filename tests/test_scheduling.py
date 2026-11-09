@@ -83,6 +83,25 @@ class SchedulerTests(unittest.TestCase):
         with self.assertRaises(Halt):self.c.configure_schedule({'enabled':True,'live_consent':'true'},self.task)
         self.c.telegram.configure(TelegramSettings())
         with self.assertRaises(Halt):self.c.configure_schedule({'enabled':True,'live_consent':True},self.task)
+    def test_schedule_failure_signals_running_engine_to_stop(self):
+        self.assertFalse(self.c.active_stop.is_set())
+        self.c.schedule_issue('예약 달력 오류')
+        self.assertTrue(self.c.active_stop.is_set())
+        self.assertEqual(self.c.state['mode'],'BLOCKED')
+        self.assertEqual(self.c.journal.audit_rows()[-1]['stage'],'SCHEDULE_BLOCKED')
+    def test_normal_daily_limit_preserves_normal_end_state(self):
+        self.c.event('audit',{'stage':'HALTED','explanation':'하루 최대 실행 횟수에 도달했습니다.','data':{},'trace':'test'})
+        self.c.event('notice',{'subject':'자동매매 중지 / 확인 필요','body':'하루 최대 실행 횟수에 도달했습니다.'})
+        self.c.event('stopped',None)
+        self.assertEqual(self.c.state['mode'],'SESSION_ENDED')
+        self.assertFalse(self.c.schedule['blocked']);self.c.telegram.notify.assert_not_called()
+    def test_end_pending_blocks_without_automatic_cancel(self):
+        self.now=self.closed;broker=WebFakeBroker()
+        broker.pending=MagicMock(return_value=[{'ord_no':'123','stk_cd':'005930','oso_qty':'1'}])
+        with patch.object(self.c,'broker',return_value=(broker,'1234567890')):self.scheduler.tick()
+        self.assertIn('미체결',self.c.schedule['blocked'])
+        self.assertEqual(self.c.state['pending'][0]['remaining'],'1')
+        self.assertFalse(broker.orders);self.c.telegram.notify.assert_called_once()
     def test_task_failure_does_not_claim_enabled(self):
         self.c.schedule['enabled']=False;self.task.configure.side_effect=Halt('권한 오류')
         with self.assertRaises(Halt):self.c.configure_schedule({'enabled':True,'live_consent':True},self.task)

@@ -457,6 +457,7 @@ class Controller:
         with self.lock:atomic_json(self.schedule_path,self.schedule)
     def schedule_issue(self,reason,notify=True):
         with self.lock:
+            self.active_stop.set()
             changed=self.schedule['blocked']!=reason
             self.schedule['blocked']=reason;self.schedule_status='확인 필요 · 자동 시작 차단'
             if changed:
